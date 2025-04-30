@@ -1,0 +1,30 @@
+{
+  "name": "ollama-code",
+  "version": "0.1.0",
+  "description": "OllamaモデルとMCPを活用したコーディング支援CLI",
+  "main": "src/index.js",
+  "bin": {
+    "ollama-code": "./bin/ollama-code.js"
+  },
+  "type": "module",
+  "scripts": {
+    "start": "node bin/ollama-code.js"
+  },
+  "keywords": [
+    "ollama",
+    "ai",
+    "code",
+    "agent",
+    "cli",
+    "sandbox"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^11.1.0",
+    "dotenv": "^16.3.1",
+    "inquirer": "^8.2.5",
+    "node-fetch": "^3.3.2",
+    "chalk": "^4.1.2"
+  }
+}
