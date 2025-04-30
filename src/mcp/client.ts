@@ -43,7 +43,11 @@ export async function createMcpClient(config: ServerConfig): Promise<Client> {
   const transport = new StdioClientTransport({
     command: config.command,
     args: config.args || [],
-    env: config.env ? { ...config.env } : undefined
+    env: {
+      ...config.env,
+      MCP_LOG_LEVEL: 'error', // エラーのみ表示
+      NODE_ENV: 'develop'  // 本番環境では詳細ログを抑制
+    }
   });
   
   // MCP SDKのClientを初期化

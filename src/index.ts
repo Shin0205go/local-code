@@ -4,7 +4,7 @@ import inquirer from 'inquirer';
 import { OllamaProvider } from './providers/ollama.js';
 import { DockerSandbox } from './sandbox/docker.js';
 import { saveConfig, loadConfig, OllamaCodeConfig } from './config.js';
-import { MCPServerManager } from './mcp/server.js';
+import { MCPServerManager, MCPServerOptions } from './mcp/server.js';
 import { ServerConfig } from './mcp/config.js';
 import { OllamaMCPBridge } from './mcp/ollama-bridge.js';
 import chalk from 'chalk';
@@ -22,82 +22,135 @@ let mcpServerManager: MCPServerManager | null = null;
 let ollamaMCPBridge: OllamaMCPBridge | null = null;
 // MCP SDKクライアントを格納するマップ
 let sdkMcpClients: Map<string, Client> = new Map();
+// グローバルログレベル
+let globalLogLevel: string = 'quiet'; // デフォルトをquietに変更
 
-// 対話式チャット - メイン実装
-export async function startChat(config: OllamaCodeConfig): Promise<void> {
-  console.log(chalk.blue('Ollama Code 対話モード'));
-  console.log(chalk.gray('-----------------------------------'));
-  console.log('終了するには "exit" または "quit" と入力してください。');
-  
-  // 設定がなければ、デフォルト設定を使用
-  if (!config || !config.model) {
-    console.log(chalk.yellow('警告: 設定ファイルが見つからないか不完全です。デフォルト設定を使用します。'));
-    console.log(chalk.yellow('セットアップを実行するには: ollama-code setup'));
-    
-    // デフォルト設定
-    config = {
-      provider: 'ollama',
-      model: 'codellama:7b-instruct',
-      baseURL: 'http://localhost:11434/v1',
-      sandbox: { type: 'none', options: {} }
-    };
-  }
-  
+// 共通のAI処理関数
+async function processWithAI(config: OllamaCodeConfig, input: string, options: {
+  isInteractive?: boolean;
+  history?: any[];
+  logLevel?: string;
+}): Promise<{
+  content: string;
+  toolCalls: { tool: string; args: any }[];
+  codeBlocks: string[];
+}> {
   // プロバイダーを作成
   const provider = new OllamaProvider(config);
   
-  // Ollamaサーバーに接続できるか確認
-  try {
-    console.log(chalk.gray('Ollamaサーバーに接続しています...'));
-    const models = await provider.listModels();
-    if (models.length === 0) {
-      console.error(chalk.red('エラー: Ollamaサーバーに接続できましたが、利用可能なモデルがありません。'));
-      console.log('Ollamaでモデルをダウンロードしてください。例: ollama pull codellama:7b-instruct');
-      return;
-    }
-    console.log(chalk.green(`Ollamaサーバーに接続しました。モデル: ${config.model}`));
-  } catch (error) {
-    console.error(chalk.red('エラー: Ollamaサーバーに接続できません。'));
-    console.log('Ollamaサーバーが実行中であることを確認して、もう一度お試しください。');
-    console.log('インストール方法: https://ollama.ai/download');
-    return;
-  }
-  
-  // MCPサーバーの初期化を試みる（失敗してもエラーにはしない）
+  // MCPサーバーの初期化
+  let mcpContext = '';
+  let mcpTools: any[] = [];
   let mcpEnabled = false;
-  let mcpServers: string[] = [];
   
   if (config.mcp && config.mcp.enabled) {
     try {
-      console.log(chalk.gray('MCPサーバーの初期化を試みています...'));
-      mcpServerManager = new MCPServerManager();
-      
-      // MCPサーバーを自動起動
-      mcpServers = await initializeMcpServers();
-      
-      if (mcpServers.length > 0) {
-        mcpEnabled = true;
-        console.log(chalk.green(`${mcpServers.length}個のMCPサーバーを起動しました。高度なツール機能が利用可能です。`));
-      } else {
-        console.log(chalk.yellow('MCPサーバーを起動できませんでした。基本的な対話モードで続行します。'));
+      if (!mcpServerManager) {
+        mcpServerManager = new MCPServerManager();
+        // ログレベルをオプションとして渡す
+        const servers = await initializeMcpServers({
+          logLevel: options.logLevel || globalLogLevel
+        });
+        
+        if (servers.length > 0) {
+          mcpEnabled = true;
+          mcpContext = `使用可能なMCPサーバー: ${servers.join(', ')}\n\n`;
+          
+          // 利用可能なツール情報を取得
+          const allTools = await getAllTools(sdkMcpClients);
+          for (const [serverId, tools] of Object.entries(allTools)) {
+            if (Array.isArray(tools) && tools.length > 0) {
+              mcpTools = mcpTools.concat(tools.map((tool: any) => ({
+                server: serverId,
+                name: tool.name,
+                description: tool.description || ''
+              })));
+            }
+          }
+        }
       }
     } catch (error) {
-      console.log(chalk.yellow('MCPサーバーの初期化に失敗しました。基本的な対話モードで続行します。'));
+      console.warn('MCPサーバー初期化エラー:', error instanceof Error ? error.message : String(error));
     }
-  } else {
-    console.log(chalk.gray('MCPは無効になっています。基本的な対話モードで続行します。'));
   }
   
+  // システムプロンプトの準備
+  let systemPrompt = 'あなたはコーディングタスクの実装を支援するエキスパートプログラマーです。';
+  if (options.isInteractive) {
+    systemPrompt += '対話形式でユーザーの質問に回答してください。';
+  } else {
+    systemPrompt += 'タスクを解決するJavaScriptコードを生成してください。';
+  }
+  
+  // MCPツール情報を追加
+  if (mcpEnabled && mcpTools.length > 0) {
+    systemPrompt += '\n\n以下のMCPツールを使用できます：\n';
+    systemPrompt += mcpTools.map((tool: any) => 
+      `- ${tool.name} (${tool.server}): ${tool.description}`
+    ).join('\n');
+    
+    systemPrompt += '\n\nツールを使用するには、以下の形式でコマンドを記述してください：\n';
+    systemPrompt += '```\ntools/call ツール名 {"引数名":"値"}\n```\n';
+  }
+  
+  // 現在のコンテキスト情報
+  const currentDir = process.cwd();
+  const dirInfo = fs.readdirSync(currentDir).slice(0, 20).join(', ');
+  const contextInfo = `${mcpContext}現在のディレクトリ: ${currentDir}\nファイル: ${dirInfo}\n\n`;
+  
+  // メッセージの準備
+  let messages;
+  if (options.history && options.history.length > 0) {
+    // 対話モードなら履歴を使用
+    messages = [...options.history];
+    if (messages[0].role === 'system') {
+      // システムプロンプトを更新
+      messages[0].content = systemPrompt;
+    } else {
+      // システムプロンプトを追加
+      messages.unshift({ role: 'system', content: systemPrompt });
+    }
+    // 最新のユーザー入力を追加
+    messages.push({ role: 'user', content: contextInfo + input });
+  } else {
+    // 単発タスクモードなら新しいメッセージを作成
+    messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: contextInfo + (options.isInteractive ? input : `タスク: ${input}`) }
+    ];
+  }
+  
+  // モデルに送信
+  const response = await provider.chatCompletion(messages);
+  const content = response.choices[0].message.content;
+  
+  // ツール呼び出しとコードブロックを抽出
+  const toolCalls = extractToolCalls(content);
+  const codeBlocks = extractCodeBlocks(content);
+  
+  return {
+    content,
+    toolCalls,
+    codeBlocks
+  };
+}
+
+// 対話モード
+export async function startChat(config: OllamaCodeConfig, options: { logLevel?: string } = {}): Promise<void> {
+  // グローバルログレベルを設定
+  if (options.logLevel) {
+    globalLogLevel = options.logLevel;
+  }
+  
+  console.log(chalk.blue('Ollama Code 対話モード'));
   console.log(chalk.gray('-----------------------------------'));
-  console.log(chalk.cyan('会話を開始します。質問やコーディングタスクを入力してください。'));
+  console.log('終了するには "exit" または "quit" と入力してください。');
   
   // 対話の履歴を保持
   const messages = [
     {
       role: 'system',
-      content: mcpEnabled 
-        ? `あなたはコーディングや技術的な質問を支援するAIアシスタントです。接続されているMCPサーバー: ${mcpServers.join(', ')}。これらのツールを使って様々なタスクを実行できます。`
-        : 'あなたはコーディングや技術的な質問を支援するAIアシスタントです。プログラミング言語、アルゴリズム、技術的な問題について詳しく説明してください。'
+      content: '自動的に置き換えられます'  // processWithAI内で置換される
     }
   ];
   
@@ -124,84 +177,29 @@ export async function startChat(config: OllamaCodeConfig): Promise<void> {
         continue;
       }
       
-      // ユーザーメッセージを追加
-      messages.push({ role: 'user', content: userInput });
-      
       console.log(chalk.gray('思考中...'));
       
-      // モデルに送信
-      const response = await provider.chatCompletion(messages);
-      const content = response.choices[0].message.content;
+      // AIでの処理（共通関数を使用）
+      const result = await processWithAI(config, userInput, {
+        isInteractive: true,
+        history: messages,
+        logLevel: options.logLevel
+      });
       
       // アシスタントの応答を表示
       console.log(chalk.blue('アシスタント:'));
-      console.log(content);
+      console.log(result.content);
       
       // 応答をメッセージ履歴に追加
-      messages.push({ role: 'assistant', content });
+      messages.push({ role: 'user', content: userInput });
+      messages.push({ role: 'assistant', content: result.content });
       
       console.log(chalk.gray('-----------------------------------'));
       
-      // コードブロックを抽出 - もしユーザーが実行したいかどうか尋ねる
-      const codeBlocks = extractCodeBlocks(content);
-      // if (codeBlocks.length > 0) {
-      //   const { runCode } = await inquirer.prompt<{ runCode: boolean }>([
-      //     {
-      //       type: 'confirm',
-      //       name: 'runCode',
-      //       message: '生成されたコードを実行しますか？',
-      //       default: false
-      //     }
-      //   ]);
-        
-      //   if (runCode) {
-      //     console.log(chalk.yellow('\n=== コード実行中 ===\n'));
-          
-      //     // サンドボックスを作成
-      //     const sandbox = new DockerSandbox();
-      //     try {
-      //       const result = await sandbox.execute(codeBlocks[0]);
-            
-      //       console.log(chalk.yellow('\n=== 実行結果 ===\n'));
-      //       if (result.success) {
-      //         console.log(result.output);
-              
-      //         // 保存するか尋ねる
-      //         const { save } = await inquirer.prompt<{ save: boolean }>([
-      //           {
-      //             type: 'confirm',
-      //             name: 'save',
-      //             message: 'このコードをファイルに保存しますか？',
-      //             default: false
-      //           }
-      //         ]);
-              
-      //         if (save) {
-      //           const { filename } = await inquirer.prompt<{ filename: string }>([
-      //             {
-      //               type: 'input',
-      //               name: 'filename',
-      //               message: 'ファイル名:',
-      //               default: 'output.js'
-      //             }
-      //           ]);
-                
-      //           fs.writeFileSync(filename, codeBlocks[0]);
-      //           console.log(chalk.green(`コードを${filename}に保存しました`));
-      //         }
-      //       } else {
-      //         console.error(chalk.red('実行に失敗:'), result.error);
-      //         if (result.stderr) {
-      //           console.error(result.stderr);
-      //         }
-      //       }
-      //     } catch (error) {
-      //       console.error(chalk.red('コード実行エラー:'), error instanceof Error ? error.message : String(error));
-      //     }
-          
-      //     console.log(chalk.gray('-----------------------------------'));
-      //   }
-      // }
+      // ツール呼び出しがあれば実行
+      if (result.toolCalls.length > 0) {
+        await executeToolCalls(result.toolCalls);
+      }
     } catch (error) {
       console.error(chalk.red('エラー:'), error instanceof Error ? error.message : String(error));
       console.log(chalk.gray('-----------------------------------'));
@@ -209,8 +207,109 @@ export async function startChat(config: OllamaCodeConfig): Promise<void> {
   }
   
   // 終了処理 - MCPサーバーのシャットダウン
-  if (mcpEnabled && mcpServerManager) {
-    console.log(chalk.gray('MCPサーバーをシャットダウンしています...'));
+  await shutdownMcpServers();
+  
+  console.log(chalk.blue('対話モードを終了します。またお会いしましょう！'));
+}
+
+// タスク実行
+export async function executeTask(config: OllamaCodeConfig, task: string, options: { logLevel?: string } = {}): Promise<void> {
+  // グローバルログレベルを設定
+  if (options.logLevel) {
+    globalLogLevel = options.logLevel;
+  }
+  
+  console.log(`タスクを実行中: ${task}`);
+  
+  // AIでの処理（共通関数を使用）
+  const result = await processWithAI(config, task, {
+    isInteractive: false,
+    logLevel: options.logLevel
+  });
+  
+  // AIの応答を表示
+  console.log('\n=== 回答 ===\n');
+  console.log(result.content);
+  
+  // ツール呼び出しがあれば実行
+  if (result.toolCalls.length > 0) {
+    await executeToolCalls(result.toolCalls);
+  }
+  
+  // 終了処理 - MCPサーバーのシャットダウン
+  await shutdownMcpServers();
+}
+
+// ツール呼び出しの実行
+async function executeToolCalls(toolCalls: { tool: string; args: any }[]): Promise<void> {
+  if (toolCalls.length === 0) return;
+  
+  console.log('\n=== 検出されたツール呼び出し ===\n');
+  
+  // ツール呼び出しの概要を表示
+  for (let i = 0; i < toolCalls.length; i++) {
+    const call = toolCalls[i];
+    console.log(`${i + 1}. ${call.tool} ${JSON.stringify(call.args)}`);
+  }
+  
+  // ユーザーに実行の確認を取る
+  const { executeTools } = await inquirer.prompt<{ executeTools: boolean }>([
+    {
+      type: 'confirm',
+      name: 'executeTools',
+      message: '上記のツールを実行しますか？',
+      default: false
+    }
+  ]);
+  
+  if (!executeTools) {
+    console.log('ツール実行をスキップしました。');
+    return;
+  }
+  
+  console.log('\n=== ツール呼び出しを実行中 ===\n');
+  
+  for (const call of toolCalls) {
+    try {
+      console.log(`ツール実行: ${call.tool} ${JSON.stringify(call.args)}`);
+      
+      // サーバーIDを自動検出
+      const serverId = await findServerForTool(sdkMcpClients, call.tool);
+      
+      if (!serverId) {
+        console.error(`ツール "${call.tool}" をサポートするサーバーが見つかりません`);
+        continue;
+      }
+      
+      // ツールを実行
+      console.log(`サーバー ${serverId} でツール ${call.tool} を実行中...`);
+      const result = await callTool(sdkMcpClients, call.tool, call.args);
+      
+      console.log('\n=== 実行結果 ===\n');
+      
+      // 結果の表示（複雑なデータ構造の場合のハンドリング）
+      if (result.content && Array.isArray(result.content)) {
+        // テキストコンテンツと各種リソースを表示
+        displayToolResults(result);
+      } else {
+        // 単純な結果の表示
+        console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
+      }
+    } catch (error) {
+      console.error('ツール実行エラー:', error instanceof Error ? error.message : String(error));
+    }
+  }
+  
+  console.log('\n=== ツール実行完了 ===\n');
+}
+
+// MCPサーバーのシャットダウン
+async function shutdownMcpServers(): Promise<void> {
+  if (mcpServerManager) {
+    if (globalLogLevel !== 'quiet') {
+      console.log(chalk.gray('MCPサーバーをシャットダウンしています...'));
+    }
+    
     try {
       // SDKクライアントを切断
       for (const [serverId, client] of sdkMcpClients.entries()) {
@@ -219,24 +318,273 @@ export async function startChat(config: OllamaCodeConfig): Promise<void> {
           try {
             await client.request({ method: "shutdown", params: {} }, EmptyResultSchema);
           } catch (e) {
-            // shutdownがサポートされていない場合は無視
-            console.log(`サーバー ${serverId} はshutdownメソッドをサポートしていません`);
+            // shutdownがサポートされていない場合は無視（ログ出力しない）
           }
-          console.log(`サーバー ${serverId} との接続を切断しました`);
         } catch (e) {
+          // 切断エラーは重要なので表示
           console.warn(`サーバー ${serverId} との切断中にエラーが発生しました:`, e);
         }
       }
       
       // サーバープロセスを停止
       await mcpServerManager.stopAllServers();
-      console.log(chalk.green('MCPサーバーをシャットダウンしました。'));
+      
+      if (globalLogLevel !== 'quiet') {
+        console.log(chalk.green('MCPサーバーをシャットダウンしました。'));
+      }
     } catch (error) {
       console.error(chalk.red('MCPサーバーのシャットダウンに失敗:'), error instanceof Error ? error.message : String(error));
     }
   }
+}
+
+// ヘルパー関数（ツール結果の表示）
+function displayToolResults(result: any): void {
+  if (!result.content || !Array.isArray(result.content)) return;
   
-  console.log(chalk.blue('対話モードを終了します。またお会いしましょう！'));
+  // テキスト内容を表示
+  const textContent = result.content
+    .filter((c: any) => c.type === 'text')
+    .map((c: any) => c.text)
+    .join('\n');
+  
+  if (textContent) {
+    console.log(textContent);
+  }
+  
+  // リソース内容を表示
+  const resources = result.content
+    .filter((c: any) => c.type === 'resource' && c.resource);
+  
+  if (resources.length > 0) {
+    console.log('\n=== リソース ===\n');
+    for (const resource of resources) {
+      console.log(`URI: ${resource.resource?.uri}`);
+      console.log(`MIMEタイプ: ${resource.resource?.mimeType}`);
+      if (resource.resource?.text) {
+        console.log(`内容:\n${resource.resource.text}`);
+      }
+    }
+  }
+}
+
+// MCPサーバー初期化 - 自動で全てのサーバーを起動
+async function initializeMcpServers(options: MCPServerOptions = {}): Promise<string[]> {
+  try {
+    // MCPサーバーマネージャーを初期化
+    if (!mcpServerManager) {
+      mcpServerManager = new MCPServerManager();
+    }
+    
+    // 設定ファイルからサーバー設定を読み込む
+    const serverConfigs = await mcpServerManager.loadServerConfigs();
+    
+    if (serverConfigs.length === 0) {
+      console.log('MCPサーバー設定が見つかりません。');
+      return [];
+    }
+    
+    // ログレベルが非静音モードならサーバー起動情報を表示
+    if (options.logLevel !== 'quiet') {
+      console.log(`${serverConfigs.length}個のMCPサーバーを起動中...`);
+    }
+    
+    interface StartResult {
+      id: string;
+      success: boolean;
+      error?: any;
+    }
+    
+    const startPromises = serverConfigs.map(async (config: ServerConfig) => {
+      try {
+        // すでに実行中なら何もしない
+        if (mcpServerManager?.isServerRunning(config.id)) {
+          return { id: config.id, success: true };
+        }
+        
+        // サーバー起動（ログレベルを渡す）
+        await mcpServerManager?.startServer(config, { 
+          logLevel: options.logLevel 
+        });
+        return { id: config.id, success: true };
+      } catch (error) {
+        console.error(`サーバー起動エラー ${config.id}:`, error instanceof Error ? error.message : String(error));
+        return { id: config.id, success: false, error };
+      }
+    });
+    
+    const results = await Promise.all(startPromises);
+    const successful = results.filter(r => r.success).map(r => r.id);
+    
+    // 既存のクライアントマップをクリア
+    sdkMcpClients.clear();
+    
+    // 各サーバーに接続
+    for (const serverId of successful) {
+      const config = serverConfigs.find((c: ServerConfig) => c.id === serverId);
+      if (config) {
+        try {
+          // 環境変数にログレベルを設定
+          const env = {
+            ...config.env,
+            // ログ抑制オプション
+            NODE_ENV: options.logLevel === 'debug' ? 'development' : 'production',
+            MCP_LOG_LEVEL: options.logLevel === 'quiet' ? 'error' : (options.logLevel === 'debug' ? 'debug' : 'info'),
+            DEBUG: options.logLevel === 'debug' ? '1' : '0',
+            QUIET: options.logLevel === 'quiet' ? '1' : '0'
+          };
+          
+          // MCP SDKのStdioClientTransportを作成
+          const transport = new StdioClientTransport({
+            command: config.command,
+            args: config.args || [],
+            env
+          });
+          
+          // MCP SDKのClientを初期化
+          const client = new Client(
+            {
+              name: "ollama-code-client",
+              version: "1.0.0",
+            },
+            {
+              capabilities: {
+                tools: {},
+              },
+            }
+          );
+          
+          // クライアントを接続
+          await client.connect(transport);
+          
+          // 非静音モードならログ出力
+          if (options.logLevel !== 'quiet') {
+            console.log(`サーバー ${serverId} にMCP SDKクライアントを接続しました`);
+          }
+          
+          // クライアントをマップに追加
+          sdkMcpClients.set(serverId, client);
+        } catch (error) {
+          console.error(`サーバー ${serverId} への接続に失敗しました:`, error);
+        }
+      }
+    }
+    
+    // 非静音モードならログ出力
+    if (options.logLevel !== 'quiet') {
+      console.log(`MCPサーバー初期化完了: ${sdkMcpClients.size}/${serverConfigs.length}個のサーバーが接続されました`);
+    }
+    
+    return Array.from(sdkMcpClients.keys());
+  } catch (error) {
+    console.error('MCPサーバー初期化エラー:', error instanceof Error ? error.message : String(error));
+    return [];
+  }
+}
+
+// MCP実行（ソースから既存の実装を維持）
+export async function executeMcpCommand(serverId: string, command: string, options: { logLevel?: string } = {}): Promise<void> {
+  try {
+    // グローバルログレベルを設定
+    if (options.logLevel) {
+      globalLogLevel = options.logLevel;
+    }
+    
+    // MCPサーバーマネージャーの初期化
+    if (!mcpServerManager) {
+      mcpServerManager = new MCPServerManager();
+      await initializeMcpServers({ logLevel: options.logLevel });
+    }
+    
+    // サーバーが実行中か確認
+    if (!mcpServerManager.isServerRunning(serverId)) {
+      console.error(`MCPサーバー "${serverId}" は実行されていません。`);
+      console.log('利用可能なサーバー:', mcpServerManager.getRunningServers().join(', '));
+      return;
+    }
+    
+    console.log(`サーバー ${serverId} にコマンド実行: ${command}`);
+    
+    // commandがtools/listの場合
+    if (command === 'tools/list') {
+      console.log('利用可能なツールを取得...');
+      const allTools = await getAllTools(sdkMcpClients);
+      
+      // サーバーごとにツールを表示
+      let toolCount = 0;
+      for (const [serverId, tools] of Object.entries(allTools)) {
+        console.log(`\n=== サーバー ${serverId} のツール ===`);
+        
+        // toolsが配列であることを確認してから処理
+        const toolArray = Array.isArray(tools) ? tools : [];
+        
+        if (toolArray.length === 0) {
+          console.log('ツールはありません');
+          continue;
+        }
+        
+        for (const tool of toolArray) {
+          console.log(`- ${tool.name}: ${tool.description || '説明なし'}`);
+          toolCount++;
+        }
+      }
+      
+      console.log(`\n合計${toolCount}個のツールが見つかりました`);
+    } else if (command.startsWith('tools/call ')) {
+      // tools/call の場合、フォーマット: tools/call ツール名 引数(JSON)
+      const parts = command.split(' ');
+      if (parts.length < 3) {
+        console.error('不正なコマンド形式。例: tools/call tool_name {"arg1":"value1"}');
+        return;
+      }
+      
+      const toolName = parts[1];
+      const argsJson = parts.slice(2).join(' ');
+      
+      try {
+        const args = JSON.parse(argsJson);
+        console.log(`ツール呼び出し: ${toolName} ${JSON.stringify(args)}`);
+        
+        // 実行の確認
+        const { confirm } = await inquirer.prompt<{ confirm: boolean }>([
+          {
+            type: 'confirm',
+            name: 'confirm',
+            message: 'このツールを実行しますか？',
+            default: false
+          }
+        ]);
+        
+        if (!confirm) {
+          console.log('ツール実行をキャンセルしました。');
+          return;
+        }
+        
+        // ツールを実行
+        const result = await callTool(sdkMcpClients, toolName, args);
+        
+        console.log('\n=== 実行結果 ===\n');
+        
+        // 結果の処理
+        if (result.content && Array.isArray(result.content)) {
+          // テキスト内容を表示
+          displayToolResults(result);
+        } else {
+          // 構造化されていない結果の場合
+          console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
+        }
+      } catch (e) {
+        console.error('エラー:', e);
+      }
+    } else {
+      console.error('未知のコマンド:', command);
+      console.log('サポートされているコマンド: tools/list, tools/call');
+    }
+    
+    console.log('MCPコマンド実行完了');
+  } catch (error) {
+    console.error('MCPコマンド実行エラー:', error instanceof Error ? error.message : String(error));
+  }
 }
 
 // セットアップウィザード
@@ -326,277 +674,59 @@ export async function setupWizard(): Promise<void> {
   }
 }
 
-// MCPサーバーのセットアップ (従来の選択式バージョン - 現在は使用しない)
-async function setupMcpServersOld(): Promise<void> {
-  console.log('\nMCPサーバーのセットアップ');
-  console.log('=====================');
+// コンテンツからツール呼び出しを抽出する関数
+function extractToolCalls(content: string): { tool: string; args: any }[] {
+  const calls: { tool: string; args: any }[] = [];
   
-  try {
-    // MCPサーバーマネージャーの初期化
-    mcpServerManager = new MCPServerManager();
-    
-    // 設定ファイルを読み込む
-    const serverConfigs = await mcpServerManager.loadServerConfigs();
-    
-    if (serverConfigs.length === 0) {
-      console.log('利用可能なMCPサーバーがありません。設定ファイルを確認してください。');
-      console.log('設定ファイルパス: ' + path.join(process.cwd(), 'config/mcp-config.json'));
-      return;
-    }
-    
-    // 起動するサーバーを選択
-    const { selectedServers } = await inquirer.prompt<{ selectedServers: string[] }>([
-      {
-        type: 'checkbox',
-        name: 'selectedServers',
-        message: '起動するMCPサーバーを選択:',
-        choices: serverConfigs.map(server => ({
-          name: `${server.name} (${server.id})`,
-          value: server.id,
-          checked: true
-        }))
-      }
-    ]);
-    
-    if (selectedServers.length === 0) {
-      console.log('MCPサーバーが選択されていません。');
-      return;
-    }
-    
-    // 選択されたサーバーを起動
-    console.log('選択されたMCPサーバーを起動中...');
-    
-    const startedServers: string[] = [];
-    for (const serverId of selectedServers) {
-      const serverConfig = serverConfigs.find((s: ServerConfig) => s.id === serverId);
-      if (serverConfig) {
-        try {
-          console.log(`${serverConfig.name} (${serverId}) を起動中...`);
-          await mcpServerManager.startServer(serverConfig);
-          startedServers.push(serverId);
-          console.log(`${serverConfig.name} (${serverId}) を起動しました`);
-        } catch (error) {
-          console.error(`${serverConfig.name} (${serverId}) の起動に失敗しました:`, error instanceof Error ? error.message : String(error));
-        }
-      }
-    }
-    
-    if (startedServers.length > 0) {
-      console.log(`${startedServers.length}個のMCPサーバーを起動しました`);
-    } else {
-      console.log('MCPサーバーを起動できませんでした');
-    }
-  } catch (error) {
-    console.error('MCPサーバーセットアップエラー:', error instanceof Error ? error.message : String(error));
-  }
-}
-
-// タスク実行
-export async function executeTask(config: OllamaCodeConfig, task: string): Promise<void> {
-  console.log(`タスクを実行中: ${task}`);
+  // 正規表現でツール呼び出しパターンを検索
+  // パターン1: tools/call filesystem ls {"path":"/"}
+  const regex1 = /tools\/call\s+(\w+)\s+(\w+)\s+({.*?})/g;
+  let match;
   
-  // プロバイダーを作成
-  const provider = new OllamaProvider(config);
-  
-  // // サンドボックスを作成（必要な場合）
-  // let sandbox: DockerSandbox | null = null;
-  // if (config.sandbox && typeof config.sandbox !== 'string' && config.sandbox.type !== 'none') {
-  //   sandbox = new DockerSandbox();
-  //   console.log(`${config.sandbox.type}サンドボックスを使用してコードを実行します。`);
-  // }
-  
-  // MCPサーバーを初期化（必要な場合）
-  let mcpContext = '';
-  if (config.mcp && config.mcp.enabled) {
-    console.log('MCPサーバー情報を取得中...');
-    
-    // MCPサーバーマネージャーの初期化
-    if (!mcpServerManager) {
-      mcpServerManager = new MCPServerManager();
+  while ((match = regex1.exec(content)) !== null) {
+    try {
+      const server = match[1]; // サーバー名（例: filesystem）
+      const tool = match[2];   // ツール名（例: ls）
+      const argsStr = match[3]; // 引数（例: {"path":"/"})
       
-      // MCPサーバーを自動起動
-      try {
-        const startedServers = await initializeMcpServers();
-        
-        // 起動中のMCPサーバー情報を取得
-        if (startedServers.length > 0) {
-          mcpContext = `使用可能なMCPサーバー: ${startedServers.join(', ')}\n\n`+`これらのツールを使って様々なタスクを実行できます。`;
-        }
-      } catch (error) {
-        console.warn('MCPサーバー初期化エラー:', error instanceof Error ? error.message : String(error));
-      }
-    }
-  }
-  
-  // 現在のディレクトリ情報
-  const currentDir = process.cwd();
-  const dirInfo = fs.readdirSync(currentDir).slice(0, 20).join(', ');
-  
-  // メッセージを作成
-  const messages = [
-    {
-      role: 'system',
-      content: `あなたはコーディングや技術的な質問を支援するAIアシスタントです。`
-    },
-    {
-      role: 'user',
-      content: `${mcpContext}現在のディレクトリ: ${currentDir}\nファイル: ${dirInfo}\n\nタスク: ${task}`
-    }
-  ];
-  
-  // モデルに送信
-  console.log('思考中...');
-  const response = await provider.chatCompletion(messages);
-  const content = response.choices[0].message.content;
-  
-  console.log('\n=== 回答 ===\n');
-  console.log(content);
-  
-//   // コードブロックを抽出
-//   const codeBlocks = extractCodeBlocks(content);
-  
-//   if (codeBlocks.length > 0 && sandbox) {
-//     const { execute } = await inquirer.prompt<{ execute: boolean }>([
-//       {
-//         type: 'confirm',
-//         name: 'execute',
-//         message: 'このコードをサンドボックスで実行しますか？',
-//         default: true
-//       }
-//     ]);
-    
-//     if (execute) {
-//       console.log('\n=== コード実行中 ===\n');
-//       const result = await sandbox.execute(codeBlocks[0]);
+      // 完全なツール名を構築
+      const fullToolName = `${server}.${tool}`;
       
-//       console.log('\n=== 実行結果 ===\n');
-//       if (result.success) {
-//         console.log(result.output);
-        
-//         // 保存するか尋ねる
-//         const { save } = await inquirer.prompt<{ save: boolean }>([
-//           {
-//             type: 'confirm',
-//             name: 'save',
-//             message: 'このコードをファイルに保存しますか？',
-//             default: true
-//           }
-//         ]);
-        
-//         if (save) {
-//           const { filename } = await inquirer.prompt<{ filename: string }>([
-//             {
-//               type: 'input',
-//               name: 'filename',
-//               message: 'ファイル名:',
-//               default: 'output.js'
-//             }
-//           ]);
-          
-//           fs.writeFileSync(filename, codeBlocks[0]);
-//           console.log(`コードを${filename}に保存しました`);
-//         }
-//       } else {
-//         console.error('実行に失敗:', result.error);
-//         if (result.stderr) {
-//           console.error(result.stderr);
-//         }
-//       }
-//     }
-//   }
-}
-
-
-// MCPサーバー初期化 - 自動で全てのサーバーを起動
-async function initializeMcpServers(): Promise<string[]> {
-  try {
-    // MCPサーバーマネージャーを初期化
-    if (!mcpServerManager) {
-      mcpServerManager = new MCPServerManager();
-    }
-    
-    // 設定ファイルからサーバー設定を読み込む
-    const serverConfigs = await mcpServerManager.loadServerConfigs();
-    
-    if (serverConfigs.length === 0) {
-      console.log('MCPサーバー設定が見つかりません。');
-      return [];
-    }
-    
-    // すべてのサーバーを起動
-    console.log(`${serverConfigs.length}個のMCPサーバーを起動中...`);
-    
-    interface StartResult {
-      id: string;
-      success: boolean;
-      error?: any;
-    }
-    
-    const startPromises = serverConfigs.map(async (config: ServerConfig) => {
-      try {
-        // すでに実行中なら何もしない
-        if (mcpServerManager?.isServerRunning(config.id)) {
-          return { id: config.id, success: true };
-        }
-        
-        // サーバー起動
-        await mcpServerManager?.startServer(config);
-        return { id: config.id, success: true };
-      } catch (error) {
-        console.error(`サーバー起動エラー ${config.id}:`, error instanceof Error ? error.message : String(error));
-        return { id: config.id, success: false, error };
-      }
-    });
-    
-    const results = await Promise.all(startPromises);
-    const successful = results.filter(r => r.success).map(r => r.id);
-    
-    // 既存のクライアントマップをクリア
-    sdkMcpClients.clear();
-    
-    // 各サーバーに接続
-    for (const serverId of successful) {
-      const config = serverConfigs.find((c: ServerConfig) => c.id === serverId);
-      if (config) {
-        try {
-          // MCP SDKのStdioClientTransportを作成
-          const transport = new StdioClientTransport({
-            command: config.command,
-            args: config.args || [],
-            env: config.env ? { ...config.env } : undefined
-          });
-          
-          // MCP SDKのClientを初期化
-          const client = new Client(
-            {
-              name: "ollama-code-client",
-              version: "1.0.0",
-            },
-            {
-              capabilities: {
-                tools: {},
-              },
-            }
-          );
-          
-          // クライアントを接続
-          await client.connect(transport);
-          console.log(`サーバー ${serverId} にMCP SDKクライアントを接続しました`);
-          
-          // クライアントをマップに追加
-          sdkMcpClients.set(serverId, client);
-        } catch (error) {
-          console.error(`サーバー ${serverId} への接続に失敗しました:`, error);
-        }
+      // JSON文字列をパース
+      const args = JSON.parse(argsStr);
+      
+      calls.push({ tool: fullToolName, args });
+    } catch (e) {
+      if (globalLogLevel !== 'quiet') {
+        console.warn('ツール呼び出しの解析エラー:', e instanceof Error ? e.message : String(e));
       }
     }
-    
-    console.log(`MCPサーバー初期化完了: ${sdkMcpClients.size}/${serverConfigs.length}個のサーバーが接続されました`);
-    return Array.from(sdkMcpClients.keys());
-  } catch (error) {
-    console.error('MCPサーバー初期化エラー:', error instanceof Error ? error.message : String(error));
-    return [];
   }
+  
+  // パターン2: tools/call ls {"path":"/"}（サーバー名なし）
+  const regex2 = /tools\/call\s+(\w+)\s+({.*?})/g;
+  
+  while ((match = regex2.exec(content)) !== null) {
+    // regex1ですでに処理したマッチはスキップ
+    const fullMatch = match[0];
+    if (regex1.test(fullMatch)) continue;
+    
+    try {
+      const tool = match[1];   // ツール名（例: ls）
+      const argsStr = match[2]; // 引数（例: {"path":"/"})
+      
+      // JSON文字列をパース
+      const args = JSON.parse(argsStr);
+      
+      calls.push({ tool, args });
+    } catch (e) {
+      if (globalLogLevel !== 'quiet') {
+        console.warn('ツール呼び出しの解析エラー:', e instanceof Error ? e.message : String(e));
+      }
+    }
+  }
+  
+  return calls;
 }
 
 // マークダウンからコードブロックを抽出
@@ -612,138 +742,30 @@ function extractCodeBlocks(text: string): string[] {
   return blocks;
 }
 
-// 関連コードファイルを取得
-async function getRelevantFiles(directory: string, options: { maxDepth?: number; ignoreDirs?: string[]; extensions?: string[] } = {}): Promise<string[]> {
-  const maxDepth = options.maxDepth || 3;
-  const ignoreDirs = options.ignoreDirs || ['node_modules', '.git', 'dist', 'build', '.cache'];
-  const extensions = options.extensions || ['.js', '.ts', '.jsx', '.tsx', '.json', '.md'];
-  
-  function walkDir(dir: string, depth = 0): string[] {
-    if (depth > maxDepth) return [];
-    
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const files: string[] = [];
-    
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      
-      if (entry.isDirectory()) {
-        if (!ignoreDirs.includes(entry.name)) {
-          files.push(...walkDir(fullPath, depth + 1));
-        }
-      } else if (extensions.includes(path.extname(entry.name))) {
-        files.push(fullPath);
-      }
+// 指定されたツールをサポートするサーバーIDを探す
+async function findServerForTool(
+  clients: Map<string, Client>,
+  toolName: string
+): Promise<string | undefined> {
+  // ツール名に "." が含まれる場合は、サーバーとツールを分割
+  if (toolName.includes('.')) {
+    const [serverId, actualTool] = toolName.split('.');
+    // このサーバーが存在するか確認
+    if (clients.has(serverId)) {
+      return serverId;
     }
-    
-    return files;
   }
   
-  return walkDir(directory);
-}
-
-// MCPコマンドの実行
-export async function executeMcpCommand(serverId: string, command: string): Promise<void> {
-  try {
-    // MCPサーバーマネージャーの初期化
-    if (!mcpServerManager) {
-      mcpServerManager = new MCPServerManager();
-      await initializeMcpServers();
-    }
-    
-    // サーバーが実行中か確認
-    if (!mcpServerManager.isServerRunning(serverId)) {
-      console.error(`MCPサーバー "${serverId}" は実行されていません。`);
-      console.log('利用可能なサーバー:', mcpServerManager.getRunningServers().join(', '));
-      return;
-    }
-    
-    console.log(`サーバー ${serverId} にコマンド実行: ${command}`);
-    
-    // commandがtools/listの場合
-    if (command === 'tools/list') {
-      console.log('利用可能なツールを取得...');
-      const allTools = await getAllTools(sdkMcpClients);
-      
-      // サーバーごとにツールを表示
-      let toolCount = 0;
-      for (const [serverId, tools] of Object.entries(allTools)) {
-        console.log(`\n=== サーバー ${serverId} のツール ===`);
-        
-        // toolsが配列であることを確認してから処理
-        const toolArray = Array.isArray(tools) ? tools : [];
-        
-        if (toolArray.length === 0) {
-          console.log('ツールはありません');
-          continue;
-        }
-        
-        for (const tool of toolArray) {
-          console.log(`- ${tool.name}: ${tool.description || '説明なし'}`);
-          toolCount++;
-        }
+  // 通常の検索: 全サーバーでツールを探す
+  for (const [serverId, client] of clients.entries()) {
+    try {
+      const toolsResult = await client.listTools();
+      if (toolsResult.tools.some(tool => tool.name === toolName)) {
+        return serverId;
       }
-      
-      console.log(`\n合計${toolCount}個のツールが見つかりました`);
-    } else if (command.startsWith('tools/call ')) {
-      // tools/call の場合、フォーマット: tools/call ツール名 引数(JSON)
-      const parts = command.split(' ');
-      if (parts.length < 3) {
-        console.error('不正なコマンド形式。例: tools/call tool_name {"arg1":"value1"}');
-        return;
-      }
-      
-      const toolName = parts[1];
-      const argsJson = parts.slice(2).join(' ');
-      
-      try {
-        const args = JSON.parse(argsJson);
-        console.log(`ツール呼び出し: ${toolName} ${JSON.stringify(args)}`);
-        
-        // ツールを呼び出す
-        const result = await callTool(sdkMcpClients, toolName, args);
-        
-        console.log('\n=== 実行結果 ===\n');
-        
-        // 結果の処理
-        if (result.content && Array.isArray(result.content)) {
-          // テキスト内容を表示 - 型アノテーションを追加
-          const textContent = result.content
-            .filter((c: any) => c.type === 'text')
-            .map((c: any) => c.text)
-            .join('\n');
-          
-          console.log(textContent || '返答テキストがありません');
-          
-          // リソース内容を表示 - 型アノテーションを追加
-          const resources = result.content
-            .filter((c: any) => c.type === 'resource' && c.resource);
-          
-          if (resources.length > 0) {
-            console.log('\n=== リソース ===\n');
-            for (const resource of resources) {
-              console.log(`URI: ${resource.resource?.uri}`);
-              console.log(`MIMEタイプ: ${resource.resource?.mimeType}`);
-              if (resource.resource?.text) {
-                console.log(`内容:\n${resource.resource.text}`);
-              }
-            }
-          }
-        } else {
-          // 構造化されていない結果の場合
-          console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
-        }
-      } catch (e) {
-        console.error('エラー:', e);
-      }
-    } else {
-      console.error('未知のコマンド:', command);
-      console.log('サポートされているコマンド: tools/list, tools/call');
+    } catch (error) {
+      console.error(`サーバー ${serverId} からツールリストを取得できませんでした:`, error);
     }
-    
-    console.log('MCPコマンド実行完了');
-  } catch (error) {
-    console.error('MCPコマンド実行エラー:', error instanceof Error ? error.message : String(error));
   }
+  return undefined;
 }
-

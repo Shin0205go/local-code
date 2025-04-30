@@ -11,21 +11,32 @@ program
   .name('ollama-code')
   .description('Ollamaモデルを使用したコーディング支援CLI')
   .version('0.1.0')
-  .arguments('[task]') // タスクパラメータを追加
-  .action(async (task) => {
+  .usage('[タスク...]')
+  .option('--verbose', 'ログを詳細に表示する（デフォルトは静音モード）')
+  .option('--debug', '詳細なデバッグログを表示する')
+  .action(async () => {
     try {
+      // コマンドラインオプションを取得
+      const options = program.opts();
+      
+      // ログレベルを決定 - デフォルトはquiet
+      const logLevel = options.debug ? 'debug' : (options.verbose ? 'info' : 'quiet');
+      
       // 設定をロード
       const config = loadConfig();
       
-      // タスクが指定された場合はタスク実行、そうでなければ対話モード
-      if (task) {
-        await executeTask(config, task);
+      // 引数があればタスク実行、なければ対話モード
+      const args = program.args;
+      if (args && args.length > 0) {
+        // 全引数を連結してタスクとして扱う
+        const task = args.join(' ');
+        await executeTask(config, task, { logLevel });
       } else {
         // 対話モードを開始
-        await startChat(config);
+        await startChat(config, { logLevel });
       }
-    } catch (error:any) {
-      console.error(chalk.red('実行に失敗:'), error.message);
+    } catch (error) {
+      console.error(chalk.red('実行に失敗:'), error instanceof Error ? error.message : String(error));
     }
   });
 
@@ -35,51 +46,25 @@ program
   .action(async () => {
     try {
       await setupWizard();
-    } catch (error: any) {
-      console.error(chalk.red('セットアップに失敗:'), error.message);
+    } catch (error) {
+      console.error(chalk.red('セットアップに失敗:'), error instanceof Error ? error.message : String(error));
     }
   });
 
-program
-  .command('execute <task>')
-  .description('コーディングタスクを実行')
-  .option('-s, --sandbox', 'サンドボックス環境で実行')
-  .option('-g, --github <repo>', 'GitHubリポジトリで実行')
-  .option('-m, --mcp', 'MCPサーバーを使用')
-  .action(async (task, options) => {
-    try {
-      const config = loadConfig();
-      
-      // オプションで設定を上書き
-      if (options.sandbox) {
-        config.sandbox = { type: 'docker', options: {} };
-      }
-      
-      if (options.github) {
-        config.github = options.github;
-      }
-      
-      if (options.mcp) {
-        // 空のオブジェクトに初期化する代わりに、enabledプロパティを持つオブジェクトを作成
-        if (!config.mcp) config.mcp = { enabled: true };
-        else config.mcp.enabled = true;
-      }
-      
-      await executeTask(config, task);
-    } catch (error: any) {
-      console.error(chalk.red('実行に失敗:'), error.message);
-    }
-  });
-
-// MCPサーバー関連のコマンド
+// MCPサーバー関連のコマンド - 上級者向け
 const mcpCommand = program.command('mcp')
   .description('MCPサーバー管理コマンド');
 
 mcpCommand
   .command('start [serverId]')
   .description('MCPサーバーを起動')
-  .action(async (serverId) => {
+  .option('--verbose', 'ログを詳細に表示する（デフォルトは静音モード）')
+  .option('--debug', '詳細なデバッグログを表示する')
+  .action(async (serverId, cmdOptions) => {
     try {
+      // ログレベルを決定 - デフォルトはquiet
+      const logLevel = cmdOptions.debug ? 'debug' : (cmdOptions.verbose ? 'info' : 'quiet');
+      
       const { MCPServerManager } = await import('../mcp/server.js');
       const serverManager = new MCPServerManager();
       
@@ -95,15 +80,20 @@ mcpCommand
       
       for (const config of serverConfigs) {
         try {
+          // 特定のサーバーIDが指定されている場合はそれのみ起動
+          if (serverId && config.id !== serverId) {
+            continue;
+          }
+          
           console.log(`${config.name} (${config.id}) を起動中...`);
-          await serverManager.startServer(config);
+          await serverManager.startServer(config, { logLevel });
           console.log(`${config.name} (${config.id}) を起動しました`);
-        } catch (error: any) {
-          console.error(`${config.name} (${config.id}) の起動に失敗:`, error.message);
+        } catch (error) {
+          console.error(`${config.name} (${config.id}) の起動に失敗:`, error instanceof Error ? error.message : String(error));
         }
       }
-    } catch (error: any) {
-      console.error(chalk.red('MCPサーバー起動に失敗:'), error.message);
+    } catch (error) {
+      console.error(chalk.red('MCPサーバー起動に失敗:'), error instanceof Error ? error.message : String(error));
     }
   });
 
@@ -130,9 +120,29 @@ mcpCommand
         console.log(`- ${config.name} (${config.id}): ${status}`);
         console.log(`  コマンド: ${config.command} ${config.args?.join(' ') || ''}`);
       }
-    } catch (error: any) {
-      console.error(chalk.red('MCPサーバー一覧取得に失敗:'), error.message);
+    } catch (error) {
+      console.error(chalk.red('MCPサーバー一覧取得に失敗:'), error instanceof Error ? error.message : String(error));
     }
   });
 
+program
+  .command('execute <task>')
+  .description('(非推奨) 直接タスクを実行する')
+  .option('--verbose', 'ログを詳細に表示する（デフォルトは静音モード）')
+  .option('--debug', '詳細なデバッグログを表示する')
+  .action(async (task, cmdOptions) => {
+    try {
+      console.log(chalk.yellow('注: "execute" コマンドは非推奨です。代わりに `ollama-code "タスク内容"` を使用してください。'));
+      
+      // ログレベルを決定 - デフォルトはquiet
+      const logLevel = cmdOptions.debug ? 'debug' : (cmdOptions.verbose ? 'info' : 'quiet');
+      
+      const config = loadConfig();
+      await executeTask(config, task, { logLevel });
+    } catch (error) {
+      console.error(chalk.red('実行に失敗:'), error instanceof Error ? error.message : String(error));
+    }
+  });
+
+// 引数を解析
 program.parse();
