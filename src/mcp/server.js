@@ -1,4 +1,4 @@
-import { spawn, execSync, exec } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -13,93 +13,196 @@ export class MCPServerManager {
   constructor(configPath) {
     this.configPath = configPath || path.join(APP_ROOT, 'config/mcp-config.json');
     this.pidDir = path.join(os.homedir(), '.ollama-code', 'pids');
+    this.logDir = path.join(os.homedir(), '.ollama-code', 'logs');
     
-    // PID保存ディレクトリの作成
+    // 必要なディレクトリの作成
     if (!fs.existsSync(this.pidDir)) {
       fs.mkdirSync(this.pidDir, { recursive: true });
     }
+    
+    if (!fs.existsSync(this.logDir)) {
+      fs.mkdirSync(this.logDir, { recursive: true });
+    }
   }
   
-  // IDでサーバーを起動（追加メソッド）
-  async startServerById(serverId) {
+  // MCPクライアントを取得
+  async getClient(serverId) {
+    // サーバー設定を取得
     const configs = await this.loadServerConfigs();
     const serverConfig = configs.find(config => config.id === serverId);
     
     if (!serverConfig) {
-      throw new Error(`Server with ID ${serverId} not found`);
+      throw new Error(`MCPサーバー ${serverId} の設定が見つかりません`);
     }
     
-    return this.startServer(serverConfig);
+    // クライアントインスタンスを作成して返す
+    return {
+      serverId,
+      serverConfig,
+      executeTask: async (params) => this.executeTask(serverId, params)
+    };
+  }
+  
+  // タスク実行
+  async executeTask(serverId, params) {
+    const { task, generatedCode, context } = params;
+    
+    // ログ出力
+    console.log('=== MCPサーバーリクエスト ===');
+    console.log('サーバーID:', serverId);
+    console.log('タスク:', task);
+    console.log('コンテキスト:', JSON.stringify(context, null, 2));
+    
+    // ツール呼び出しを検出するパターン
+    const toolCallPattern = /```json\s*\{\s*"action"\s*:\s*"([^"]+)"\s*,\s*"action_input"\s*:\s*(?:"([^"]*)"|(\{[\s\S]*?\}))\s*\}\s*```/g;
+    
+    // ツール呼び出しを検出
+    const toolCalls = [];
+    let match;
+    
+    while ((match = toolCallPattern.exec(generatedCode)) !== null) {
+      const actionName = match[1];
+      let actionInput = match[2] || match[3]; // 文字列かJSONオブジェクト文字列
+      
+      // JSONオブジェクトの場合はパース
+      if (actionInput && actionInput.startsWith('{')) {
+        try {
+          actionInput = JSON.parse(actionInput);
+        } catch (error) {
+          console.error('JSONパースエラー:', error.message);
+        }
+      }
+      
+      toolCalls.push({
+        action: actionName,
+        actionInput
+      });
+    }
+    
+    if (toolCalls.length > 0) {
+      console.log(`ツール呼び出しを${toolCalls.length}個検出しました:`);
+      
+      // ツール呼び出しを実行
+      const toolResults = [];
+      
+      for (const toolCall of toolCalls) {
+        console.log(`ツール実行: ${toolCall.action}`);
+        console.log('入力:', JSON.stringify(toolCall.actionInput, null, 2));
+        
+        // ツール実行
+        try {
+          const result = await this.executeToolCall(toolCall.action, toolCall.actionInput);
+          toolResults.push({
+            action: toolCall.action,
+            status: 'success',
+            result
+          });
+        } catch (error) {
+          toolResults.push({
+            action: toolCall.action,
+            status: 'error',
+            error: error.message
+          });
+        }
+      }
+      
+      return {
+        toolResults,
+        task,
+        message: `${toolCalls.length}個のツールを実行しました`
+      };
+    }
+    
+    // ツール呼び出しがない場合はそのまま返す
+    return {
+      message: "ツール呼び出しは検出されませんでした",
+      task
+    };
+  }
+  
+  // ツール呼び出し実行
+  async executeToolCall(action, input) {
+    // ログ出力
+    console.log(`ツール '${action}' を実行中...`);
+    
+    // 実装例: 単純なタイプ別処理
+    if (action.startsWith('search_')) {
+      return {
+        results: [`${action}の検索結果: ${JSON.stringify(input)}`],
+        timestamp: new Date().toISOString(),
+      };
+    } else if (action.startsWith('file_')) {
+      return {
+        path: typeof input === 'string' ? input : input.path,
+        success: true,
+        timestamp: new Date().toISOString(),
+      };
+    } else if (action.startsWith('github_')) {
+      return {
+        repo: typeof input === 'string' ? input : input.repo,
+        success: true,
+        files: [
+          { name: 'file1.js', size: 1024 },
+          { name: 'file2.js', size: 2048 }
+        ],
+        timestamp: new Date().toISOString(),
+      };
+    } else {
+      // デフォルトの応答
+      return {
+        action: action,
+        input: input,
+        timestamp: new Date().toISOString(),
+        message: `${action}は実行されましたが、詳細な実装はまだありません。`
+      };
+    }
   }
   
   // サーバーが実行中かチェック
   isServerRunning(serverId) {
-    const pidFile = this.getPidFilePath(serverId);
+    const pidFile = path.join(this.pidDir, `${serverId}.pid`);
     
     if (!fs.existsSync(pidFile)) {
       return false;
     }
     
     try {
-      // 設定を読み込み
-      const configs = this.loadServerConfigsSync();
-      const serverConfig = configs.find(config => config.id === serverId);
+      // PIDファイルからプロセスIDを読み取り
+      const pid = fs.readFileSync(pidFile, 'utf8').trim();
       
-      if (!serverConfig) {
-        return false;
-      }
-      
-      // Dockerコマンドの場合
-      if (serverConfig.command && serverConfig.command.toLowerCase().includes('docker')) {
-        const containerId = fs.readFileSync(pidFile, 'utf8').trim();
-        return this.isDockerContainerRunning(serverId, containerId);
+      // プロセスが存在するか確認
+      if (process.platform === 'win32') {
+        // Windowsの場合
+        try {
+          const result = execSync(`tasklist /FI "PID eq ${pid}" /NH`, { encoding: 'utf8' });
+          return result.indexOf(pid) !== -1;
+        } catch (error) {
+          return false;
+        }
       } else {
-        // 通常プロセスの場合
-        const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-        return this.isProcessRunning(pid);
+        // Unix/Linuxの場合
+        try {
+          process.kill(parseInt(pid), 0); // シグナル0はプロセスが存在するかをチェックするだけ
+          return true;
+        } catch (error) {
+          return false;
+        }
       }
     } catch (error) {
-      console.error(`Error checking if server ${serverId} is running:`, error.message);
       return false;
     }
   }
   
-  // 設定を同期的に読み込む
-  loadServerConfigsSync() {
-    try {
-      if (!fs.existsSync(this.configPath)) {
-        return [];
-      }
-      
-      const configData = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
-      
-      return Object.entries(configData.mcpServers || {}).map(([id, config]) => ({
-        id,
-        name: config.name || id,
-        command: config.command,
-        args: config.args || [],
-        env: config.env || {},
-        cwd: config.cwd
-      }));
-    } catch (error) {
-      console.error('Error loading server configs:', error.message);
-      return [];
-    }
-  }
-  
-  // 実行中のサーバーIDリストを取得
+  // 実行中のサーバーを取得
   getRunningServers() {
     try {
-      // PIDディレクトリが存在しない場合は空配列を返す
       if (!fs.existsSync(this.pidDir)) {
         return [];
       }
       
-      // PIDディレクトリ内のファイルを取得
       const files = fs.readdirSync(this.pidDir);
-      
-      // 実行中のサーバーIDを収集
       const runningServers = [];
+      
       for (const file of files) {
         if (file.endsWith('.pid')) {
           const serverId = file.replace('.pid', '');
@@ -108,7 +211,7 @@ export class MCPServerManager {
           } else {
             // 実行されていないサーバーのPIDファイルは削除
             try {
-              fs.unlinkSync(this.getPidFilePath(serverId));
+              fs.unlinkSync(path.join(this.pidDir, file));
             } catch (e) {
               // 削除エラーは無視
             }
@@ -123,267 +226,155 @@ export class MCPServerManager {
     }
   }
   
-  // PIDファイルのパスを取得
-  getPidFilePath(serverId) {
-    return path.join(this.pidDir, `${serverId}.pid`);
+  // サーバー起動（ID指定）
+  async startServerById(serverId) {
+    const configs = await this.loadServerConfigs();
+    const serverConfig = configs.find(config => config.id === serverId);
+    
+    if (!serverConfig) {
+      throw new Error(`Server with ID ${serverId} not found`);
+    }
+    
+    return this.startServer(serverConfig);
   }
   
   // サーバー起動
   async startServer(serverConfig) {
     return new Promise((resolve, reject) => {
       try {
-        console.log(`Starting MCP Server: ${serverConfig.name || serverConfig.id}`);
-        
-        // ログディレクトリの作成
-        const logDir = path.join(os.homedir(), '.ollama-code', 'logs');
-        if (!fs.existsSync(logDir)) {
-          fs.mkdirSync(logDir, { recursive: true });
+        // 既に実行中のプロセスがあるか確認
+        if (this.isServerRunning(serverConfig.id)) {
+          console.log(`サーバー ${serverConfig.id} は既に実行中です`);
+          return resolve(serverConfig.id);
         }
         
-        const stdoutPath = path.join(logDir, `${serverConfig.id}.out.log`);
-        const stderrPath = path.join(logDir, `${serverConfig.id}.err.log`);
+        console.log(`サーバー ${serverConfig.id} を起動しています...`);
         
-        // サーバーコマンドがdockerで始まる場合は特別な処理
-        if (serverConfig.command && serverConfig.command.toLowerCase() === 'docker') {
-          // コンテナに名前を付ける
-          const containerName = `ollama-code-${serverConfig.id}`;
-          
-          // 既存のコンテナを削除（既に存在する場合）
-          try {
-            execSync(`docker rm -f ${containerName} 2>/dev/null || true`);
-          } catch (error) {
-            // 既存コンテナがない場合は無視
-          }
-          
-          // Docker実行コマンドを作成
-          let dockerArgs = Array.isArray(serverConfig.args) ? serverConfig.args.join(' ') : (serverConfig.args || '');
-          
-          // 環境変数を追加
-          const envVars = Object.entries(serverConfig.env || {})
-            .map(([key, value]) => `-e ${key}=${value}`)
-            .join(' ');
-          
-          // --nameフラグを追加
-          let fullCommand = `docker run --name ${containerName}`;
-          
-          // 環境変数を追加
-          if (envVars) {
-            fullCommand += ` ${envVars}`;
-          }
-          
-          // Docker用引数を維持する（-iなど）
-          fullCommand += ` ${dockerArgs}`;
-          
-          console.log(`Executing Docker command: ${fullCommand}`);
-          
-          // コンテナを起動（ログファイルにリダイレクト）
-          // 注意: -iを維持する場合は、バックグラウンド実行時にエラーになるのでstdioを設定
-          const dockerProcess = spawn('/bin/sh', ['-c', `${fullCommand} > ${stdoutPath} 2> ${stderrPath}`], {
-            detached: true
-          });
-          
-          dockerProcess.unref();
-          
-          // PIDファイルにプロセスIDを保存
-          fs.writeFileSync(this.getPidFilePath(serverConfig.id), dockerProcess.pid.toString());
-          
-          console.log(`Started Docker process for ${serverConfig.name || serverConfig.id} with PID: ${dockerProcess.pid}`);
-          
-          // Docker起動プロセス自体はすぐに終了するので、ここでは成功とみなす
-          setTimeout(() => {
-            try {
-              // コンテナIDを取得して更新
-              const containerId = execSync(`docker ps -q -f "name=${containerName}"`, { encoding: 'utf8' }).trim();
-              if (containerId) {
-                // PIDファイルを更新
-                fs.writeFileSync(this.getPidFilePath(serverConfig.id), containerId);
-                console.log(`Updated container ID for ${serverConfig.id}: ${containerId}`);
-              }
-            } catch (error) {
-              console.warn(`Warning: Could not update container ID: ${error.message}`);
-            }
-            
-            resolve(dockerProcess.pid);
-          }, 2000);
-        } else {
-          // 通常のプロセス起動（Node.jsなど）
-          // stdout/stderrをファイルにリダイレクト
-          const stdout = fs.openSync(stdoutPath, 'a');
-          const stderr = fs.openSync(stderrPath, 'a');
-          
-          // コマンドと引数を正規化
-          const command = serverConfig.command;
-          const args = Array.isArray(serverConfig.args) ? serverConfig.args : 
-            (typeof serverConfig.args === 'string' ? serverConfig.args.split(' ').filter(Boolean) : []);
-          
-          console.log(`Executing command: ${command} ${args.join(' ')}`);
-          
-          // プロセス起動
-          const mcpServer = spawn(command, args, {
-            env: { ...process.env, ...serverConfig.env },
-            cwd: serverConfig.cwd || process.cwd(),
-            stdio: ['ignore', stdout, stderr],
-            detached: true  // プロセスを親から切り離す
-          });
-          
-          // プロセスを親から切り離す
-          mcpServer.unref();
-          
-          // エラーハンドリング
-          mcpServer.on('error', (err) => {
-            console.error(`Failed to start process: ${err.message}`);
-            reject(err);
-          });
-          
-          // PIDを保存
-          fs.writeFileSync(this.getPidFilePath(serverConfig.id), mcpServer.pid.toString());
-          
-          console.log(`Started ${serverConfig.name || serverConfig.id} with PID: ${mcpServer.pid}`);
-          
-          // 少し待ってから成功を返す
-          setTimeout(() => {
-            if (this.isProcessRunning(mcpServer.pid)) {
-              resolve(mcpServer.pid);
-            } else {
-              reject(new Error(`Process started but terminated immediately. Check logs at ${stderrPath}`));
-            }
-          }, 1000);
+        // ログファイルのパスを設定
+        const stdoutPath = path.join(this.logDir, `${serverConfig.id}.out.log`);
+        const stderrPath = path.join(this.logDir, `${serverConfig.id}.err.log`);
+        
+        // ログファイルを開く
+        const stdout = fs.openSync(stdoutPath, 'a');
+        const stderr = fs.openSync(stderrPath, 'a');
+        
+        // 環境変数を設定
+        const env = { ...process.env };
+        if (serverConfig.env) {
+          Object.assign(env, serverConfig.env);
         }
+        
+        // コマンドと引数の確認
+        const command = serverConfig.command || 'node';
+        const args = Array.isArray(serverConfig.args) ? serverConfig.args : [];
+        
+        // プロセスを起動
+        const serverProcess = spawn(command, args, {
+          env,
+          cwd: serverConfig.cwd || process.cwd(),
+          stdio: ['ignore', stdout, stderr],
+          detached: true // プロセスをデタッチして親から独立させる
+        });
+        
+        // 親プロセスから切り離す
+        serverProcess.unref();
+        
+        // PIDファイルに保存
+        const pidFile = path.join(this.pidDir, `${serverConfig.id}.pid`);
+        fs.writeFileSync(pidFile, serverProcess.pid.toString());
+        
+        // エラーハンドリング
+        serverProcess.on('error', (err) => {
+          console.error(`サーバー ${serverConfig.id} 起動エラー:`, err.message);
+          reject(err);
+        });
+        
+        // 1秒待ってプロセスが生きているか確認
+        setTimeout(() => {
+          if (this.isServerRunning(serverConfig.id)) {
+            console.log(`サーバー ${serverConfig.id} を起動しました (PID: ${serverProcess.pid})`);
+            resolve(serverConfig.id);
+          } else {
+            const error = new Error(`サーバー ${serverConfig.id} の起動に失敗しました`);
+            reject(error);
+          }
+        }, 1000);
       } catch (error) {
-        console.error(`Error starting MCP server ${serverConfig.id}:`, error.message);
+        console.error(`サーバー ${serverConfig.id} の起動に失敗:`, error.message);
         reject(error);
       }
     });
   }
   
-  // Docker用のプロセス実行チェック
-  isDockerContainerRunning(serverId, containerIdOrName) {
-    try {
-      const containerName = `ollama-code-${serverId}`;
-      // docker psコマンドでコンテナ状態を確認（IDまたは名前で）
-      const cmd = `docker ps -q -f "name=${containerName}"`;
-      
-      console.log(`Checking Docker container status with: ${cmd}`);
-      
-      const result = execSync(cmd, { encoding: 'utf8' }).trim();
-      console.log(`Docker container check result: "${result}"`);
-      
-      return result !== '';
-    } catch (error) {
-      console.error(`Error checking Docker container: ${error.message}`);
-      return false;
-    }
-  }
-  
   // サーバー停止
   async stopServer(serverId) {
-    const pidFile = this.getPidFilePath(serverId);
+    const pidFile = path.join(this.pidDir, `${serverId}.pid`);
     
     if (!fs.existsSync(pidFile)) {
-      console.log(`No PID file found for server ${serverId}`);
-      return false;
+      console.log(`サーバー ${serverId} は既に停止しています`);
+      return true;
     }
     
     try {
-      const pidOrContainerId = fs.readFileSync(pidFile, 'utf8').trim();
+      // PIDファイルからプロセスIDを読み取り
+      const pidStr = fs.readFileSync(pidFile, 'utf8').trim();
+      const pid = parseInt(pidStr);
       
-      // サーバー設定を取得してコマンドを確認
-      const configs = await this.loadServerConfigs();
-      const serverConfig = configs.find(config => config.id === serverId);
+      if (isNaN(pid)) {
+        console.error(`サーバー ${serverId} のPIDが無効: ${pidStr}`);
+        fs.unlinkSync(pidFile);
+        return false;
+      }
       
-      if (serverConfig && serverConfig.command && serverConfig.command.toLowerCase() === 'docker') {
-        // Dockerコンテナを停止
-        const containerName = `ollama-code-${serverId}`;
-        console.log(`Stopping Docker container: ${containerName}`);
-        
+      // プロセスを終了
+      console.log(`サーバー ${serverId} を停止中 (PID: ${pid})...`);
+      
+      if (process.platform === 'win32') {
+        // Windowsの場合
         try {
-          execSync(`docker stop ${containerName} 2>/dev/null || docker stop ${pidOrContainerId} 2>/dev/null || docker rm -f ${containerName} 2>/dev/null || docker rm -f ${pidOrContainerId} 2>/dev/null || true`);
-          console.log(`Stopped Docker container for server ${serverId}`);
+          execSync(`taskkill /PID ${pid} /F /T`);
         } catch (error) {
-          console.warn(`Warning while stopping Docker container: ${error.message}`);
+          console.error(`サーバー ${serverId} の停止に失敗:`, error.message);
         }
-        
-        // PIDファイル削除
-        fs.unlinkSync(pidFile);
-        return true;
       } else {
-        // 通常プロセスを停止
-        const numericPid = parseInt(pidOrContainerId);
-        
-        // プロセスが実行中か確認
-        if (this.isProcessRunning(numericPid)) {
-          // OSに応じたプロセス終了コマンド
-          if (process.platform === 'win32') {
-            spawn('taskkill', ['/pid', numericPid.toString(), '/f', '/t']);
-          } else {
-            process.kill(numericPid, 'SIGTERM');
-          }
+        // Unix/Linuxの場合
+        try {
+          process.kill(pid, 'SIGTERM');
           
-          console.log(`Stopped server ${serverId} (PID: ${numericPid})`);
-        } else {
-          console.log(`Process for server ${serverId} (PID: ${numericPid}) is not running`);
+          // 少し待ってからSIGKILLを送信（プロセスがまだ生きていれば）
+          setTimeout(() => {
+            try {
+              process.kill(pid, 0);
+              // プロセスがまだ生きている場合、SIGKILLを送信
+              process.kill(pid, 'SIGKILL');
+            } catch (e) {
+              // プロセスが既に終了している場合は何もしない
+            }
+          }, 2000);
+        } catch (error) {
+          if (error.code !== 'ESRCH') {
+            console.error(`サーバー ${serverId} の停止に失敗:`, error.message);
+          }
         }
-        
-        // PIDファイル削除
-        fs.unlinkSync(pidFile);
-        return true;
       }
-    } catch (error) {
-      console.error(`Error stopping server ${serverId}:`, error.message);
-      return false;
-    }
-  }
-  
-  // サーバーの状態をチェック
-  async getServerStatus(serverId) {
-    const pidFile = this.getPidFilePath(serverId);
-    
-    if (!fs.existsSync(pidFile)) {
-      return 'stopped';
-    }
-    
-    try {
-      const configs = await this.loadServerConfigs();
-      const serverConfig = configs.find(config => config.id === serverId);
       
-      if (serverConfig && serverConfig.command && serverConfig.command.toLowerCase() === 'docker') {
-        // Dockerコンテナの場合
-        return this.isDockerContainerRunning(serverId) ? 'running' : 'stopped';
-      } else {
-        // 通常プロセスの場合
-        const pid = parseInt(fs.readFileSync(pidFile, 'utf8').trim());
-        return this.isProcessRunning(pid) ? 'running' : 'stopped';
-      }
-    } catch (error) {
-      console.error(`Error getting server status for ${serverId}:`, error.message);
-      return 'unknown';
-    }
-  }
-  
-  // プロセスが実行中かチェック
-  isProcessRunning(pid) {
-    try {
-      // 0シグナルを送信して生存確認
-      process.kill(pid, 0);
+      // PIDファイルを削除
+      fs.unlinkSync(pidFile);
+      console.log(`サーバー ${serverId} を停止しました`);
+      
       return true;
     } catch (error) {
+      console.error(`サーバー ${serverId} の停止に失敗:`, error.message);
+      
+      // エラーがあってもPIDファイルは削除
+      try {
+        fs.unlinkSync(pidFile);
+      } catch (e) {
+        // 削除エラーは無視
+      }
+      
       return false;
     }
-  }
-  
-  // 全サーバーの状態を取得
-  async getAllServerStatus() {
-    const configs = await this.loadServerConfigs();
-    
-    const statusPromises = configs.map(async (config) => {
-      const status = await this.getServerStatus(config.id);
-      return {
-        ...config,
-        status
-      };
-    });
-    
-    return Promise.all(statusPromises);
   }
   
   // 設定ファイルからサーバー設定を読み込む

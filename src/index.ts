@@ -7,9 +7,16 @@ import { GitHubMCP } from './mcp/github';
 import { saveConfig, loadConfig, OllamaCodeConfig } from './config';
 import { MCPServerManager } from './mcp/server';
 import { ServerConfig } from './mcp/config';
+import { OllamaMCPBridge } from './mcp/ollama-bridge';
+import { executeMCPChat } from './commands/mcp-chat';
 
 // MCPサーバーマネージャー
 let mcpServerManager: MCPServerManager | null = null;
+// OllamaMCPブリッジ
+let ollamaMCPBridge: OllamaMCPBridge | null = null;
+
+// エクスポート - コマンド
+export { executeMCPChat } from './commands/mcp-chat';
 
 // セットアップウィザード
 export async function setupWizard(): Promise<void> {
@@ -451,8 +458,51 @@ export async function executeMcpCommand(serverId: string, command: string): Prom
     
     console.log(`サーバー ${serverId} にコマンド実行: ${command}`);
     
-    // ここでMCPサーバーにコマンドを送信する処理を実装
-    // 現在のところ、MCPの実装はモックのみ
+    // OllamaMCPブリッジを初期化
+    if (!ollamaMCPBridge) {
+      ollamaMCPBridge = new OllamaMCPBridge();
+      await ollamaMCPBridge.initialize();
+    }
+    
+    // commandがtools/listの場合
+    if (command === 'tools/list') {
+      console.log('利用可能なツールを取得...');
+      const { tools } = await ollamaMCPBridge.getOllamaTools();
+      console.log(`${tools.length}個のツールが見つかりました:`);
+      
+      for (const tool of tools) {
+        console.log(`- ${tool.function.name}: ${tool.function.description}`);
+      }
+    } else if (command.startsWith('tools/call ')) {
+      // tools/call の場合、フォーマット: tools/call ツール名 引数(JSON)
+      const parts = command.split(' ');
+      if (parts.length < 3) {
+        console.error('不正なコマンド形式。例: tools/call tool_name {"arg1":"value1"}');
+        return;
+      }
+      
+      const toolName = parts[1];
+      const argsJson = parts.slice(2).join(' ');
+      
+      try {
+        const args = JSON.parse(argsJson);
+        console.log(`ツール呼び出し: ${toolName} ${JSON.stringify(args)}`);
+        
+        const result = await ollamaMCPBridge.callOllamaTool(toolName, args);
+        
+        console.log('\n=== 実行結果 ===\n');
+        console.log(result.result);
+        
+        if (result.isError) {
+          console.error('エラーが発生しました');
+        }
+      } catch (e) {
+        console.error('引数のJSONパースに失敗:', e);
+      }
+    } else {
+      console.error('未知のコマンド:', command);
+      console.log('サポートされているコマンド: tools/list, tools/call');
+    }
     
     console.log('MCPコマンド実行完了');
   } catch (error) {
