@@ -338,28 +338,64 @@ export async function startChat(config: OllamaCodeConfig, options: { logLevel?: 
       
       // ストリーミングモードでモデルに送信
       let responseContent = '';
+      let responseTool_calls: any[] = [];  // ツール呼び出し情報を保存する配列
+
+      // Ollamaモデルにチャットリクエストを送信し、ストリーミングで結果を取得
       const responseStream = await provider.chatCompletion(chatMessages, { stream: true });
 
       // ストリーミングレスポンスを処理
       for await (const part of responseStream) {
-        // ollamaライブラリの型に合わせた処理
+        // テキストコンテンツの処理
         const content = part.message?.content || '';
         responseContent += content;
         process.stdout.write(content);
+        
+        // ツール呼び出しの収集
+        if (part.message?.tool_calls && part.message.tool_calls.length > 0) {
+          for (const toolCall of part.message.tool_calls) {
+            if (!responseTool_calls.some(tc => tc.id === toolCall.id)) {
+              responseTool_calls.push(toolCall);
+            }
+          }
+        }
       }
-      
+
       console.log('\n');
-      
+
       // 応答をメッセージ履歴に追加
       messages.push({ role: 'user', content: userInput });
-      messages.push({ role: 'assistant', content: responseContent });
-      
+      messages.push({ 
+        role: 'assistant', 
+        content: responseContent,
+        // ツール呼び出しがあれば追加
+        ...(responseTool_calls.length > 0 ? { tool_calls: responseTool_calls } : {})
+      });
+
       console.log(chalk.gray('-----------------------------------'));
-      
-      // ツール呼び出しがあれば実行
-      const toolCalls = extractToolCalls(responseContent);
-      if (toolCalls.length > 0) {
-        await executeToolCalls(toolCalls);
+
+      // ollamaのツール呼び出し形式をollama-codeの形式に変換
+      if (responseTool_calls.length > 0) {
+        const toolCalls = responseTool_calls.map(tc => {
+          try {
+            return {
+              tool: tc.function.name,
+              args: JSON.parse(tc.function.arguments)
+            };
+          } catch (e) {
+            console.warn('ツール引数のパースエラー:', e);
+            return null;
+          }
+        }).filter((tc): tc is { tool: string; args: any } => tc !== null);
+        
+        if (toolCalls.length > 0) {
+          await executeToolCalls(toolCalls);
+        }
+      } else {
+        // ツール呼び出しがない場合は従来の方法で抽出を試みる
+        const toolCalls = extractToolCalls(responseContent);
+        if (toolCalls.length > 0) {
+          await executeToolCalls(toolCalls);
+        }
       }
     } catch (error) {
       console.error(chalk.red('エラー:'), error instanceof Error ? error.message : String(error));
