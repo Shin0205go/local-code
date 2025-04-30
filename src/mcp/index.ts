@@ -4,18 +4,15 @@
  */
 
 // クライアントをエクスポート
-export * from './client';
+export * from './client.js';
 
 // 設定をエクスポート
-export * from './config';
+export * from './config.js';
 
 // サーバーマネージャーをエクスポート（明示的な名前でエクスポートして競合を防ぐ）
-export { MCPServerManager } from './server';
+export { MCPServerManager } from './server.js';
 
 // Ollamaブリッジをエクスポート
-export * from './ollama-bridge';
-
-// GitHubインテグレーションをエクスポート
-export * from './github';
+export * from './ollama-bridge.js';
 
 // 追加コンポーネントは必要に応じて追加

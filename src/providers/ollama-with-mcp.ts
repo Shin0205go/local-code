@@ -3,8 +3,8 @@
  * Model Context Protocolとの統合機能を持つOllamaプロバイダー
  */
 
-import { OllamaProvider } from './ollama';
-import { OllamaMCPBridge, OllamaTool } from '../mcp/ollama-bridge';
+import { OllamaProvider } from './ollama.js';
+import { OllamaMCPBridge, OllamaTool } from '../mcp/ollama-bridge.js';
 
 interface OllamaWithMCPConfig {
   baseURL?: string;

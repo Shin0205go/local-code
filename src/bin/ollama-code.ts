@@ -1,7 +1,7 @@
-#!/usr/bin/
+#!/usr/bin/env node
 
 import { Command } from 'commander';
-import { setupWizard, executeTask, executeMcpCommand } from '../index.js';
+import { setupWizard, executeTask, executeMcpCommand, startChat } from '../index.js';
 import { loadConfig } from '../config.js';
 import chalk from 'chalk';
 
@@ -10,7 +10,18 @@ const program = new Command();
 program
   .name('ollama-code')
   .description('Ollamaモデルを使用したコーディング支援CLI')
-  .version('0.1.0');
+  .version('0.1.0')
+  // デフォルトコマンド - 引数なしで実行した場合に対話モードを開始
+  .action(async () => {
+    try {
+      // 設定をロード
+      const config = loadConfig();
+      // 対話モードを開始
+      await startChat(config);
+    } catch (error: any) {
+      console.error(chalk.red('対話モードの実行に失敗:'), error.message);
+    }
+  });
 
 program
   .command('setup')
@@ -66,58 +77,27 @@ mcpCommand
       const { MCPServerManager } = await import('../mcp/server.js');
       const serverManager = new MCPServerManager();
       
-      if (serverId) {
-        // 指定されたサーバーのみ起動
-        console.log(`MCPサーバー ${serverId} を起動中...`);
-        await serverManager.startServerById(serverId, true);
-        console.log(`MCPサーバー ${serverId} を起動しました`);
-      } else {
-        // すべてのサーバーを起動
-        const serverConfigs = await serverManager.loadServerConfigs();
-        
-        if (serverConfigs.length === 0) {
-          console.log('利用可能なMCPサーバーがありません');
-          return;
-        }
-        
-        console.log(`${serverConfigs.length}個のMCPサーバーを起動中...`);
-        
-        for (const config of serverConfigs) {
-          try {
-            console.log(`${config.name} (${config.id}) を起動中...`);
-            await serverManager.startServer(config);
-            console.log(`${config.name} (${config.id}) を起動しました`);
-          } catch (error: any) {
-            console.error(`${config.name} (${config.id}) の起動に失敗:`, error.message);
-          }
+      // すべてのサーバーを起動
+      const serverConfigs = await serverManager.loadServerConfigs();
+      
+      if (serverConfigs.length === 0) {
+        console.log('利用可能なMCPサーバーがありません');
+        return;
+      }
+      
+      console.log(`${serverConfigs.length}個のMCPサーバーを起動中...`);
+      
+      for (const config of serverConfigs) {
+        try {
+          console.log(`${config.name} (${config.id}) を起動中...`);
+          await serverManager.startServer(config);
+          console.log(`${config.name} (${config.id}) を起動しました`);
+        } catch (error: any) {
+          console.error(`${config.name} (${config.id}) の起動に失敗:`, error.message);
         }
       }
     } catch (error: any) {
       console.error(chalk.red('MCPサーバー起動に失敗:'), error.message);
-    }
-  });
-
-mcpCommand
-  .command('stop [serverId]')
-  .description('MCPサーバーを停止')
-  .action(async (serverId) => {
-    try {
-      const { MCPServerManager } = await import('../mcp/server.js');
-      const serverManager = new MCPServerManager();
-      
-      if (serverId) {
-        // 指定されたサーバーのみ停止
-        console.log(`MCPサーバー ${serverId} を停止中...`);
-        await serverManager.stopServer(serverId);
-        console.log(`MCPサーバー ${serverId} を停止しました`);
-      } else {
-        // すべてのサーバーを停止
-        console.log('すべてのMCPサーバーを停止中...');
-        await serverManager.stopAllServers();
-        console.log('すべてのMCPサーバーを停止しました');
-      }
-    } catch (error: any) {
-      console.error(chalk.red('MCPサーバー停止に失敗:'), error.message);
     }
   });
 
@@ -146,17 +126,6 @@ mcpCommand
       }
     } catch (error: any) {
       console.error(chalk.red('MCPサーバー一覧取得に失敗:'), error.message);
-    }
-  });
-
-mcpCommand
-  .command('exec <serverId> <command>')
-  .description('MCPサーバーにコマンドを送信')
-  .action(async (serverId, command) => {
-    try {
-      await executeMcpCommand(serverId, command);
-    } catch (error: any) {
-      console.error(chalk.red('MCPコマンド実行に失敗:'), error.message);
     }
   });
 

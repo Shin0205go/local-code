@@ -3,9 +3,9 @@
  * OllamaとModel Context Protocolの連携を行うブリッジ実装
  */
 
-import { MCPClient, MCPTool } from './client';
-import { ServerConfigManager, ServerConfig } from './config';
-import { MCPServerManager } from './server';
+import { MCPClient, MCPTool } from './client.js';
+import { ServerConfigManager, ServerConfig } from './config.js';
+import { MCPServerManager } from './server.js';
 import path from 'path';
 
 /**
@@ -54,14 +54,15 @@ export class OllamaMCPBridge {
   private clients: Map<string, MCPClient> = new Map();
   private serverBaseUrls: Map<string, string> = new Map();
   private toolCache: Map<string, MCPTool[]> = new Map();
+  private configPath: string;
 
   /**
    * Ollama-MCPブリッジを初期化
    * @param configPath 設定ファイルパス（省略時はデフォルト）
    */
   constructor(configPath?: string) {
-    const finalConfigPath = configPath || path.join(process.cwd(), 'config/mcp-config.json');
-    this.serverManager = new MCPServerManager(finalConfigPath);
+    this.configPath = configPath || path.join(process.cwd(), 'config/mcp-config.json');
+    this.serverManager = new MCPServerManager();
   }
 
   /**

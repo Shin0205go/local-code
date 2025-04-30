@@ -9,6 +9,8 @@ export interface ServerConfig {
   env?: Record<string, string>;
   cwd?: string;
   capabilities?: string[];
+  startupDelay?: number;
+  dependencies?: string[];
 }
 
 export class ServerConfigManager {
@@ -47,7 +49,9 @@ export class ServerConfigManager {
           args: config.args || [],
           env: config.env || {},
           cwd: config.cwd || process.cwd(),
-          capabilities: config.capabilities || []
+          capabilities: config.capabilities || [],
+          startupDelay: config.startupDelay || 0,
+          dependencies: config.dependencies || []
         }));
       } else if (rawConfig.servers) {
         // すでに配列形式の場合
