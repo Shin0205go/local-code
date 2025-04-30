@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { setupWizard, executeTask, startChat, initializeMcpServers } from '../index.js';
+import { setupWizard, startChat, initializeMcpServers } from '../index.js';
 import { loadConfig } from '../config.js';
 import chalk from 'chalk';
 import { MCPServerManager } from '../mcp/server.js';
@@ -31,16 +31,8 @@ program
         await initializeMcpServers({ logLevel });
       }
       
-      // 引数があればタスク実行、なければ対話モード
-      const args = program.args;
-      if (args && args.length > 0) {
-        // 全引数を連結してタスクとして扱う
-        const task = args.join(' ');
-        await executeTask(config, task, { logLevel });
-      } else {
-        // 対話モードを開始
+      // 対話モードを開始(引数が来ても無視)
         await startChat(config, { logLevel });
-      }
     } catch (error) {
       console.error(chalk.red('実行に失敗:'), error instanceof Error ? error.message : String(error));
     }

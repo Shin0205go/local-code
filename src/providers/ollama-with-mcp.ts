@@ -5,6 +5,29 @@
 
 import { OllamaProvider } from './ollama.js';
 import { OllamaMCPBridge, OllamaTool } from '../mcp/ollama-bridge.js';
+// ollama公式パッケージから必要な型をインポート
+import { ChatResponse } from 'ollama';
+
+// ChatResponse型とChatCompletionResponse型の互換性を確保するアダプター関数
+function adaptToCompletionResponse(response: ChatResponse | any): ChatCompletionResponse {
+  // すでにChatCompletionResponse形式なら変換しない
+  if (response.choices && Array.isArray(response.choices)) {
+    return response as ChatCompletionResponse;
+  }
+  
+  return {
+    choices: [{
+      message: {
+        role: response.message.role,
+        content: response.message.content,
+        // tool_callsがあれば追加
+        ...(response.message.tool_calls ? { tool_calls: response.message.tool_calls } : {})
+      },
+      index: 0,
+      finish_reason: "stop"
+    }]
+  };
+}
 
 interface OllamaWithMCPConfig {
   baseURL?: string;
@@ -74,7 +97,9 @@ export class OllamaWithMCPProvider extends OllamaProvider {
   async chatCompletionWithTools(messages: ChatMessage[], options: ChatCompletionOptions = {}): Promise<ChatCompletionResponse> {
     // MCP無効時は通常のモデル呼び出し
     if (!this.mcpEnabled || !this.mcpBridge) {
-      return super.chatCompletion(messages, options);
+      const response = await super.chatCompletion(messages, options);
+      // 応答をChatCompletionResponse型に変換
+      return adaptToCompletionResponse(response as ChatResponse);
     }
 
     try {
@@ -89,7 +114,8 @@ export class OllamaWithMCPProvider extends OllamaProvider {
       };
 
       // Ollamaモデルを呼び出し
-      const completion = await super.chatCompletion(messages, optionsWithTools);
+      const chatResponse = await super.chatCompletion(messages, optionsWithTools);
+      const completion = adaptToCompletionResponse(chatResponse as ChatResponse);
 
       // ツール呼び出しがあるか確認
       if (completion.choices && 
@@ -182,7 +208,9 @@ export class OllamaWithMCPProvider extends OllamaProvider {
     }
 
     // 更新されたメッセージでモデルを再度呼び出し
-    return super.chatCompletion(newMessages);
+    const chatResponse = await super.chatCompletion(newMessages);
+    // 応答をChatCompletionResponse型に変換して返す
+    return adaptToCompletionResponse(chatResponse as ChatResponse);
   }
 
   /**

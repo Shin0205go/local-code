@@ -1,7 +1,24 @@
 // Ollamaプロバイダー
-import type { Response } from 'node-fetch';
-
+import { Response } from 'node-fetch';
+// ollama公式パッケージをインポート
+import ollama from 'ollama';
+import { ChatResponse } from 'ollama'; // 必要な型も明示的にインポートする
 const fetchModule = () => import('node-fetch').then(({default: fetch}) => fetch);
+
+// ollama.jsの型をChatCompletionResponseに変換するアダプター関数
+function adaptResponse(response: ChatResponse): any {
+  // ollama.jsのレスポンスを従来の形式に変換
+  return {
+    choices: [{
+      message: {
+        role: response.message.role,
+        content: response.message.content
+      },
+      index: 0,
+      finish_reason: "stop"
+    }]
+  };
+}
 
 interface OllamaConfig {
   baseURL?: string;
@@ -64,30 +81,27 @@ export class OllamaProvider {
     }
   }
   
-  async chatCompletion(messages: any[], options: OllmaChatCompletionOptions = {}): Promise<OllamaChatCompletionResponse> {
+  async chatCompletion(messages: any[], options: OllmaChatCompletionOptions = {}) {
     try {
-      const fetch = await fetchModule();
-      const response = await fetch(`${this.baseURL}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
+      if (options.stream) {
+        // ストリーミングモードを直接返す（型変換せずに）
+        return ollama.chat({
           model: this.model,
           messages: messages,
-          stream: false,
-          ...options
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`API要求に失敗: ${response.statusText}`);
+          stream: true,
+          // その他のオプション
+        });
+      } else {
+        // 非ストリーミングモード
+        const response = await ollama.chat({
+          model: this.model,
+          messages: messages
+        });
+        // 互換性のために応答を変換
+        return adaptResponse(response);
       }
-      
-      const data = await response.json() as OllamaChatCompletionResponse;
-      return data;
     } catch (error) {
-      console.error('チャット完了エラー:', error instanceof Error ? error.message : String(error));
+      console.error('Ollama API error:', error);
       throw error;
     }
   }

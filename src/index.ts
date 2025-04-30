@@ -241,7 +241,8 @@ async function processWithAI(config: OllamaCodeConfig, input: string, options: {
   
   // モデルに送信
   const response = await provider.chatCompletion(messages);
-  const content = response.choices[0].message.content;
+  // adaptResponse関数により変換された形式を使用
+  const content = response.choices?.[0]?.message?.content || '';
   
   // ツール呼び出しとコードブロックを抽出
   const toolCalls = extractToolCalls(content);
@@ -296,28 +297,69 @@ export async function startChat(config: OllamaCodeConfig, options: { logLevel?: 
         continue;
       }
       
-      console.log(chalk.gray('思考中...'));
-      
-      // AIでの処理（共通関数を使用）
-      const result = await processWithAI(config, userInput, {
-        isInteractive: true,
-        history: messages,
-        logLevel: options.logLevel
-      });
-      
-      // アシスタントの応答を表示
       console.log(chalk.blue('アシスタント:'));
-      console.log(result.content);
+      
+      // ここでprocessWithAI関数を修正しstreamingを有効にする代わりに、
+      // 直接OllamaProviderを使用してストリーミングレスポンスを処理
+      
+      // プロバイダーを作成
+      const provider = new OllamaProvider(config);
+      
+      // システムプロンプトの準備
+      let systemPrompt = 'あなたはコーディングタスクの実装を支援するエキスパートプログラマーです。';
+      systemPrompt += '対話形式でユーザーの質問に回答してください。';
+      
+      // 現在のコンテキスト情報
+      const currentDir = process.cwd();
+      const dirInfo = fs.readdirSync(currentDir).slice(0, 20).join(', ');
+      const contextInfo = `現在のディレクトリ: ${currentDir}\nファイル: ${dirInfo}\n\n`;
+      
+      // メッセージの準備
+      let chatMessages;
+      if (messages.length > 0) {
+        // 対話モードなら履歴を使用
+        chatMessages = [...messages];
+        if (chatMessages[0].role === 'system') {
+          // システムプロンプトを更新
+          chatMessages[0].content = systemPrompt;
+        } else {
+          // システムプロンプトを追加
+          chatMessages.unshift({ role: 'system', content: systemPrompt });
+        }
+        // 最新のユーザー入力を追加
+        chatMessages.push({ role: 'user', content: contextInfo + userInput });
+      } else {
+        // 単発タスクモードなら新しいメッセージを作成
+        chatMessages = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: contextInfo + userInput }
+        ];
+      }
+      
+      // ストリーミングモードでモデルに送信
+      let responseContent = '';
+      const responseStream = await provider.chatCompletion(chatMessages, { stream: true });
+
+      // ストリーミングレスポンスを処理
+      for await (const part of responseStream) {
+        // ollamaライブラリの型に合わせた処理
+        const content = part.message?.content || '';
+        responseContent += content;
+        process.stdout.write(content);
+      }
+      
+      console.log('\n');
       
       // 応答をメッセージ履歴に追加
       messages.push({ role: 'user', content: userInput });
-      messages.push({ role: 'assistant', content: result.content });
+      messages.push({ role: 'assistant', content: responseContent });
       
       console.log(chalk.gray('-----------------------------------'));
       
       // ツール呼び出しがあれば実行
-      if (result.toolCalls.length > 0) {
-        await executeToolCalls(result.toolCalls);
+      const toolCalls = extractToolCalls(responseContent);
+      if (toolCalls.length > 0) {
+        await executeToolCalls(toolCalls);
       }
     } catch (error) {
       console.error(chalk.red('エラー:'), error instanceof Error ? error.message : String(error));
@@ -333,34 +375,6 @@ export async function startChat(config: OllamaCodeConfig, options: { logLevel?: 
   process.exit(0);
 }
 
-// タスク実行
-export async function executeTask(config: OllamaCodeConfig, task: string, options: { logLevel?: string } = {}): Promise<void> {
-  // グローバルログレベルを設定
-  if (options.logLevel) {
-    globalLogLevel = options.logLevel;
-  }
-  
-  console.log(`タスクを実行中: ${task}`);
-  
-  // AIでの処理（共通関数を使用）
-  const result = await processWithAI(config, task, {
-    isInteractive: false,
-    logLevel: options.logLevel
-  });
-  
-  // AIの応答を表示
-  console.log('\n 🦙 Ollamaからの応答 🦙 \n');
-  console.log(result.content);
-  
-  // ツール呼び出しがあれば実行
-  if (result.toolCalls.length > 0) {
-    await executeToolCalls(result.toolCalls);
-  }
-  
-  // 終了処理 - MCPサーバーのシャットダウン
-  await shutdownMcpServers();
-  process.exit(0);
-}
 
 // ツール呼び出しの実行
 async function executeToolCalls(toolCalls: { tool: string; args: any }[]): Promise<void> {
