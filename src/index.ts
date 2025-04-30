@@ -144,64 +144,64 @@ export async function startChat(config: OllamaCodeConfig): Promise<void> {
       
       // コードブロックを抽出 - もしユーザーが実行したいかどうか尋ねる
       const codeBlocks = extractCodeBlocks(content);
-      if (codeBlocks.length > 0) {
-        const { runCode } = await inquirer.prompt<{ runCode: boolean }>([
-          {
-            type: 'confirm',
-            name: 'runCode',
-            message: '生成されたコードを実行しますか？',
-            default: false
-          }
-        ]);
+      // if (codeBlocks.length > 0) {
+      //   const { runCode } = await inquirer.prompt<{ runCode: boolean }>([
+      //     {
+      //       type: 'confirm',
+      //       name: 'runCode',
+      //       message: '生成されたコードを実行しますか？',
+      //       default: false
+      //     }
+      //   ]);
         
-        if (runCode) {
-          console.log(chalk.yellow('\n=== コード実行中 ===\n'));
+      //   if (runCode) {
+      //     console.log(chalk.yellow('\n=== コード実行中 ===\n'));
           
-          // サンドボックスを作成
-          const sandbox = new DockerSandbox();
-          try {
-            const result = await sandbox.execute(codeBlocks[0]);
+      //     // サンドボックスを作成
+      //     const sandbox = new DockerSandbox();
+      //     try {
+      //       const result = await sandbox.execute(codeBlocks[0]);
             
-            console.log(chalk.yellow('\n=== 実行結果 ===\n'));
-            if (result.success) {
-              console.log(result.output);
+      //       console.log(chalk.yellow('\n=== 実行結果 ===\n'));
+      //       if (result.success) {
+      //         console.log(result.output);
               
-              // 保存するか尋ねる
-              const { save } = await inquirer.prompt<{ save: boolean }>([
-                {
-                  type: 'confirm',
-                  name: 'save',
-                  message: 'このコードをファイルに保存しますか？',
-                  default: false
-                }
-              ]);
+      //         // 保存するか尋ねる
+      //         const { save } = await inquirer.prompt<{ save: boolean }>([
+      //           {
+      //             type: 'confirm',
+      //             name: 'save',
+      //             message: 'このコードをファイルに保存しますか？',
+      //             default: false
+      //           }
+      //         ]);
               
-              if (save) {
-                const { filename } = await inquirer.prompt<{ filename: string }>([
-                  {
-                    type: 'input',
-                    name: 'filename',
-                    message: 'ファイル名:',
-                    default: 'output.js'
-                  }
-                ]);
+      //         if (save) {
+      //           const { filename } = await inquirer.prompt<{ filename: string }>([
+      //             {
+      //               type: 'input',
+      //               name: 'filename',
+      //               message: 'ファイル名:',
+      //               default: 'output.js'
+      //             }
+      //           ]);
                 
-                fs.writeFileSync(filename, codeBlocks[0]);
-                console.log(chalk.green(`コードを${filename}に保存しました`));
-              }
-            } else {
-              console.error(chalk.red('実行に失敗:'), result.error);
-              if (result.stderr) {
-                console.error(result.stderr);
-              }
-            }
-          } catch (error) {
-            console.error(chalk.red('コード実行エラー:'), error instanceof Error ? error.message : String(error));
-          }
+      //           fs.writeFileSync(filename, codeBlocks[0]);
+      //           console.log(chalk.green(`コードを${filename}に保存しました`));
+      //         }
+      //       } else {
+      //         console.error(chalk.red('実行に失敗:'), result.error);
+      //         if (result.stderr) {
+      //           console.error(result.stderr);
+      //         }
+      //       }
+      //     } catch (error) {
+      //       console.error(chalk.red('コード実行エラー:'), error instanceof Error ? error.message : String(error));
+      //     }
           
-          console.log(chalk.gray('-----------------------------------'));
-        }
-      }
+      //     console.log(chalk.gray('-----------------------------------'));
+      //   }
+      // }
     } catch (error) {
       console.error(chalk.red('エラー:'), error instanceof Error ? error.message : String(error));
       console.log(chalk.gray('-----------------------------------'));
@@ -398,12 +398,12 @@ export async function executeTask(config: OllamaCodeConfig, task: string): Promi
   // プロバイダーを作成
   const provider = new OllamaProvider(config);
   
-  // サンドボックスを作成（必要な場合）
-  let sandbox: DockerSandbox | null = null;
-  if (config.sandbox && typeof config.sandbox !== 'string' && config.sandbox.type !== 'none') {
-    sandbox = new DockerSandbox();
-    console.log(`${config.sandbox.type}サンドボックスを使用してコードを実行します。`);
-  }
+  // // サンドボックスを作成（必要な場合）
+  // let sandbox: DockerSandbox | null = null;
+  // if (config.sandbox && typeof config.sandbox !== 'string' && config.sandbox.type !== 'none') {
+  //   sandbox = new DockerSandbox();
+  //   console.log(`${config.sandbox.type}サンドボックスを使用してコードを実行します。`);
+  // }
   
   // MCPサーバーを初期化（必要な場合）
   let mcpContext = '';
@@ -420,7 +420,7 @@ export async function executeTask(config: OllamaCodeConfig, task: string): Promi
         
         // 起動中のMCPサーバー情報を取得
         if (startedServers.length > 0) {
-          mcpContext = `使用可能なMCPサーバー: ${startedServers.join(', ')}\n\n`;
+          mcpContext = `使用可能なMCPサーバー: ${startedServers.join(', ')}\n\n`+`これらのツールを使って様々なタスクを実行できます。`;
         }
       } catch (error) {
         console.warn('MCPサーバー初期化エラー:', error instanceof Error ? error.message : String(error));
@@ -436,7 +436,7 @@ export async function executeTask(config: OllamaCodeConfig, task: string): Promi
   const messages = [
     {
       role: 'system',
-      content: 'あなたはコーディングタスクの実装を支援するエキスパートプログラマーです。タスクを解決するJavaScriptコードを生成してください。コードの動作を説明し、完全で実行可能なコードを書いてください。'
+      content: `あなたはコーディングや技術的な質問を支援するAIアシスタントです。`
     },
     {
       role: 'user',
@@ -445,65 +445,65 @@ export async function executeTask(config: OllamaCodeConfig, task: string): Promi
   ];
   
   // モデルに送信
-  console.log('コード生成中...');
+  console.log('思考中...');
   const response = await provider.chatCompletion(messages);
   const content = response.choices[0].message.content;
   
-  console.log('\n=== 生成されたソリューション ===\n');
+  console.log('\n=== 回答 ===\n');
   console.log(content);
   
-  // コードブロックを抽出
-  const codeBlocks = extractCodeBlocks(content);
+//   // コードブロックを抽出
+//   const codeBlocks = extractCodeBlocks(content);
   
-  if (codeBlocks.length > 0 && sandbox) {
-    const { execute } = await inquirer.prompt<{ execute: boolean }>([
-      {
-        type: 'confirm',
-        name: 'execute',
-        message: 'このコードをサンドボックスで実行しますか？',
-        default: true
-      }
-    ]);
+//   if (codeBlocks.length > 0 && sandbox) {
+//     const { execute } = await inquirer.prompt<{ execute: boolean }>([
+//       {
+//         type: 'confirm',
+//         name: 'execute',
+//         message: 'このコードをサンドボックスで実行しますか？',
+//         default: true
+//       }
+//     ]);
     
-    if (execute) {
-      console.log('\n=== コード実行中 ===\n');
-      const result = await sandbox.execute(codeBlocks[0]);
+//     if (execute) {
+//       console.log('\n=== コード実行中 ===\n');
+//       const result = await sandbox.execute(codeBlocks[0]);
       
-      console.log('\n=== 実行結果 ===\n');
-      if (result.success) {
-        console.log(result.output);
+//       console.log('\n=== 実行結果 ===\n');
+//       if (result.success) {
+//         console.log(result.output);
         
-        // 保存するか尋ねる
-        const { save } = await inquirer.prompt<{ save: boolean }>([
-          {
-            type: 'confirm',
-            name: 'save',
-            message: 'このコードをファイルに保存しますか？',
-            default: true
-          }
-        ]);
+//         // 保存するか尋ねる
+//         const { save } = await inquirer.prompt<{ save: boolean }>([
+//           {
+//             type: 'confirm',
+//             name: 'save',
+//             message: 'このコードをファイルに保存しますか？',
+//             default: true
+//           }
+//         ]);
         
-        if (save) {
-          const { filename } = await inquirer.prompt<{ filename: string }>([
-            {
-              type: 'input',
-              name: 'filename',
-              message: 'ファイル名:',
-              default: 'output.js'
-            }
-          ]);
+//         if (save) {
+//           const { filename } = await inquirer.prompt<{ filename: string }>([
+//             {
+//               type: 'input',
+//               name: 'filename',
+//               message: 'ファイル名:',
+//               default: 'output.js'
+//             }
+//           ]);
           
-          fs.writeFileSync(filename, codeBlocks[0]);
-          console.log(`コードを${filename}に保存しました`);
-        }
-      } else {
-        console.error('実行に失敗:', result.error);
-        if (result.stderr) {
-          console.error(result.stderr);
-        }
-      }
-    }
-  }
+//           fs.writeFileSync(filename, codeBlocks[0]);
+//           console.log(`コードを${filename}に保存しました`);
+//         }
+//       } else {
+//         console.error('実行に失敗:', result.error);
+//         if (result.stderr) {
+//           console.error(result.stderr);
+//         }
+//       }
+//     }
+//   }
 }
 
 

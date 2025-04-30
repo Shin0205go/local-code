@@ -11,15 +11,21 @@ program
   .name('ollama-code')
   .description('Ollamaモデルを使用したコーディング支援CLI')
   .version('0.1.0')
-  // デフォルトコマンド - 引数なしで実行した場合に対話モードを開始
-  .action(async () => {
+  .arguments('[task]') // タスクパラメータを追加
+  .action(async (task) => {
     try {
       // 設定をロード
       const config = loadConfig();
-      // 対話モードを開始
-      await startChat(config);
-    } catch (error: any) {
-      console.error(chalk.red('対話モードの実行に失敗:'), error.message);
+      
+      // タスクが指定された場合はタスク実行、そうでなければ対話モード
+      if (task) {
+        await executeTask(config, task);
+      } else {
+        // 対話モードを開始
+        await startChat(config);
+      }
+    } catch (error:any) {
+      console.error(chalk.red('実行に失敗:'), error.message);
     }
   });
 
