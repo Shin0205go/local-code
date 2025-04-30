@@ -1,300 +1,280 @@
+// src/mcp/ollama-bridge.ts
 /**
- * Ollama-MCPブリッジ
- * OllamaとModel Context Protocolの連携を行うブリッジ実装
+ * OllamaMCPブリッジ - OllamaをMCPサーバーとして公開
  */
 
-import { MCPClient, MCPTool } from './client.js';
-import { ServerConfigManager, ServerConfig } from './config.js';
-import { MCPServerManager } from './server.js';
-import path from 'path';
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import * as fs from 'fs';
+import * as path from 'path';
 
-/**
- * Ollamaツールの型定義（Ollamaのツール形式）
- */
+// Ollamaツール定義
 export interface OllamaTool {
-  type: string;
-  function: {
-    name: string;
-    description: string;
-    parameters: {
-      type: string;
-      properties: Record<string, any>;
-      required?: string[];
-    };
+  name: string;
+  description: string;
+  parameters: {
+    type: string;
+    properties: Record<string, any>;
+    required?: string[];
   };
 }
 
 /**
- * MCPツールをOllamaツール形式に変換したレスポンス
+ * OllamaMCPブリッジ - OllamaをMCPサーバーとして公開するブリッジ
  */
-export interface MCPOllamaToolsResponse {
-  tools: OllamaTool[];
-  servers: string[];
-}
-
-/**
- * MCPツール呼び出しのパラメータ
- */
-export interface MCPToolCallParams {
-  serverId: string;
-  toolName: string;
-  arguments: Record<string, any>;
-}
-
-/**
- * MCPツール呼び出しのレスポンス
- */
-export interface MCPToolCallResponse {
-  result: string;
-  isError: boolean;
-}
-
 export class OllamaMCPBridge {
-  private serverManager: MCPServerManager;
-  private clients: Map<string, MCPClient> = new Map();
-  private serverBaseUrls: Map<string, string> = new Map();
-  private toolCache: Map<string, MCPTool[]> = new Map();
-  private configPath: string;
-
+  private ollamaBaseUrl: string;
+  private ollamaModel: string;
+  private toolsCache: Record<string, any> = {};
+  private sdkClient: Client | null = null;
+  
+  constructor(options: { baseUrl: string; model: string }) {
+    this.ollamaBaseUrl = options.baseUrl || 'http://localhost:11434/v1';
+    this.ollamaModel = options.model || 'codellama:7b-instruct';
+  }
+  
   /**
-   * Ollama-MCPブリッジを初期化
-   * @param configPath 設定ファイルパス（省略時はデフォルト）
+   * 接続先のOllamaサーバー情報を設定
    */
-  constructor(configPath?: string) {
-    this.configPath = configPath || path.join(process.cwd(), 'config/mcp-config.json');
-    this.serverManager = new MCPServerManager();
+  setOllamaInfo(baseUrl: string, model: string): void {
+    this.ollamaBaseUrl = baseUrl;
+    this.ollamaModel = model;
   }
 
   /**
-   * ブリッジを初期化して利用可能なMCPサーバーを起動
+   * SDKクライアントを設定
+   */
+  setSdkClient(client: Client): void {
+    this.sdkClient = client;
+  }
+  
+  /**
+   * Ollamaサーバーに接続できるか確認
+   */
+  async checkConnection(): Promise<boolean> {
+    try {
+      const response = await fetch(`${this.ollamaBaseUrl}/models`);
+      if (!response.ok) {
+        throw new Error(`Ollamaサーバーからのエラーレスポンス: ${response.status} ${response.statusText}`);
+      }
+      const data = await response.json();
+      return Array.isArray(data.models) && data.models.length > 0;
+    } catch (error) {
+      console.error('Ollamaサーバー接続エラー:', error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  }
+  
+  /**
+   * 初期化
+   * @returns 初期化されたサーバーIDのリスト
    */
   async initialize(): Promise<string[]> {
     try {
-      // MCPサーバーを初期化・起動
-      const serverConfigs = await this.serverManager.loadServerConfigs();
-      console.log(`${serverConfigs.length}個のMCPサーバー設定をロードしました`);
-
-      const startedServers: string[] = [];
-      for (const config of serverConfigs) {
-        try {
-          await this.serverManager.startServer(config);
-          console.log(`MCPサーバー ${config.id} を起動しました`);
-          startedServers.push(config.id);
-          
-          // MCPクライアントを作成してキャッシュ
-          await this.createClient(config);
-        } catch (error) {
-          console.error(`MCPサーバー ${config.id} の起動に失敗:`, error instanceof Error ? error.message : String(error));
-        }
+      const isConnected = await this.checkConnection();
+      if (isConnected) {
+        // 接続成功時はサーバーIDの配列を返す
+        return ['ollama'];
       }
-
-      return startedServers;
+      return [];
     } catch (error) {
-      console.error('MCPブリッジの初期化に失敗:', error instanceof Error ? error.message : String(error));
+      console.error('OllamaMCPブリッジ初期化エラー:', error);
       return [];
     }
   }
-
+  
   /**
-   * 指定したMCPサーバーのクライアントを作成
-   * @param config サーバー設定
+   * シャットダウン
    */
-  private async createClient(config: ServerConfig): Promise<void> {
+  async shutdown(): Promise<void> {
+    // 必要に応じてリソースを解放
+    console.log('OllamaMCPブリッジをシャットダウンしています...');
+  }
+  
+  /**
+   * Ollamaツールのリストを取得
+   */
+  async getOllamaTools(): Promise<{ tools: OllamaTool[], servers: string[] }> {
+    // Ollamaモデルをツールとして公開
     try {
-      // サーバーがSSE/HTTP形式の場合の処理
-      // ここではモック実装としてHTTPエンドポイントを決め打ちで設定
-      // 実際には設定ファイルからSSEエンドポイントを取得する必要がある
-      const serverUrl = `http://localhost:3000/api/mcp/${config.id}`;
-      this.serverBaseUrls.set(config.id, serverUrl);
+      const response = await fetch(`${this.ollamaBaseUrl}/models`);
+      if (!response.ok) {
+        throw new Error(`Ollamaサーバーからのエラーレスポンス: ${response.status} ${response.statusText}`);
+      }
       
-      const client = new MCPClient({
-        serverUrl: serverUrl
+      const data = await response.json();
+      const models = Array.isArray(data.models) ? data.models : [];
+      
+      // Ollamaモデルをツールとして定義
+      const tools: OllamaTool[] = models.map((model: any) => ({
+        name: `ollama_${model.name.replace(/[^a-zA-Z0-9_]/g, '_')}`,
+        description: `Ollama LLM: ${model.name} - ${model.size || 'N/A'} パラメータ`,
+        parameters: {
+          type: 'object',
+          properties: {
+            prompt: {
+              type: 'string',
+              description: 'モデルに送信するプロンプト'
+            },
+            options: {
+              type: 'object',
+              description: '生成オプション（temperature、top_pなど）',
+              properties: {}
+            }
+          },
+          required: ['prompt']
+        }
+      }));
+      
+      // 追加のツール
+      tools.push({
+        name: 'ollama_chat',
+        description: 'Ollamaモデルとチャット形式で対話',
+        parameters: {
+          type: 'object',
+          properties: {
+            messages: {
+              type: 'array',
+              description: 'チャットメッセージ（role, contentの配列）',
+              items: {
+                type: 'object',
+                properties: {
+                  role: {
+                    type: 'string',
+                    description: 'メッセージの役割（system, user, assistant）'
+                  },
+                  content: {
+                    type: 'string',
+                    description: 'メッセージの内容'
+                  }
+                }
+              }
+            },
+            model: {
+              type: 'string',
+              description: '使用するモデル名'
+            },
+            options: {
+              type: 'object',
+              description: '生成オプション（temperature、top_pなど）',
+              properties: {}
+            }
+          },
+          required: ['messages']
+        }
       });
       
-      this.clients.set(config.id, client);
-      
-      // ツールリストをプリロード
-      await this.cacheToolList(config.id);
+      return {
+        tools,
+        servers: ['ollama']
+      };
     } catch (error) {
-      console.error(`MCPクライアント作成エラー (${config.id}):`, error instanceof Error ? error.message : String(error));
-    }
-  }
-
-  /**
-   * MCPサーバーのツールリストをキャッシュ
-   * @param serverId サーバーID
-   */
-  private async cacheToolList(serverId: string): Promise<void> {
-    try {
-      const client = this.clients.get(serverId);
-      if (!client) {
-        throw new Error(`MCPクライアントが見つかりません: ${serverId}`);
-      }
-      
-      const tools = await client.listTools();
-      console.log(`MCPサーバー ${serverId} から${tools.length}個のツールを取得しました`);
-      this.toolCache.set(serverId, tools);
-    } catch (error) {
-      console.error(`ツールリストのキャッシュに失敗 (${serverId}):`, error instanceof Error ? error.message : String(error));
-      // キャッシュ失敗時は空のリストをセット
-      this.toolCache.set(serverId, []);
-    }
-  }
-
-  /**
-   * すべてのMCPサーバーから利用可能なツールをOllama形式で取得
-   * @returns Ollama形式のツールと提供サーバーリスト
-   */
-  async getOllamaTools(): Promise<MCPOllamaToolsResponse> {
-    try {
-      const runningServers = this.serverManager.getRunningServers();
-      if (runningServers.length === 0) {
-        console.warn('実行中のMCPサーバーがありません');
-        return { tools: [], servers: [] };
-      }
-      
-      const ollamaTools: OllamaTool[] = [];
-      const serverIds: string[] = [];
-      
-      // 各サーバーからツールリストを取得し、Ollama形式に変換
-      for (const serverId of runningServers) {
-        try {
-          // キャッシュからツールリストを取得、なければ再取得
-          let tools = this.toolCache.get(serverId) || [];
-          if (tools.length === 0) {
-            const client = this.clients.get(serverId);
-            if (client) {
-              tools = await client.listTools();
-              this.toolCache.set(serverId, tools);
-            }
-          }
-          
-          if (tools.length > 0) {
-            // ツールをOllama形式に変換
-            const convertedTools = tools.map(tool => this.convertToOllamaTool(tool, serverId));
-            ollamaTools.push(...convertedTools);
-            serverIds.push(serverId);
-          }
-        } catch (error) {
-          console.error(`サーバー ${serverId} からのツール取得エラー:`, error instanceof Error ? error.message : String(error));
-        }
-      }
-      
-      return { tools: ollamaTools, servers: serverIds };
-    } catch (error) {
-      console.error('Ollamaツール変換エラー:', error instanceof Error ? error.message : String(error));
+      console.error('Ollamaツール取得エラー:', error);
       return { tools: [], servers: [] };
     }
   }
-
+  
   /**
-   * MCPツールをOllama形式に変換
-   * @param tool MCPツール
-   * @param serverId サーバーID（プレフィックスとして使用）
-   * @returns Ollama形式のツール
-   */
-  private convertToOllamaTool(tool: MCPTool, serverId: string): OllamaTool {
-    // サーバーIDとツール名を組み合わせてユニークな名前を作成
-    // 例: "github__get_repo_info"
-    const toolName = `${serverId}__${tool.name}`;
-    
-    return {
-      type: 'function',
-      function: {
-        name: toolName,
-        description: `[${serverId}] ${tool.description}`,
-        parameters: tool.parameters
-      }
-    };
-  }
-
-  /**
-   * ツール名からサーバーIDとオリジナルのツール名を抽出
-   * @param combinedToolName 結合されたツール名（例: "github__get_repo_info"）
-   * @returns サーバーIDとツール名のペア
-   */
-  private extractServerAndToolName(combinedToolName: string): { serverId: string; toolName: string } {
-    const parts = combinedToolName.split('__');
-    if (parts.length !== 2) {
-      throw new Error(`不正なツール名形式: ${combinedToolName}`);
-    }
-    
-    return {
-      serverId: parts[0],
-      toolName: parts[1]
-    };
-  }
-
-  /**
-   * Ollamaのツール呼び出しをMCPサーバーに転送
-   * @param toolName ツール名（サーバーID__ツール名）
-   * @param args ツールの引数
+   * Ollamaツールを呼び出す
+   * @param toolName ツール名
+   * @param args ツール引数
    * @returns ツール実行結果
    */
-  async callOllamaTool(toolName: string, args: Record<string, any>): Promise<MCPToolCallResponse> {
+  async callOllamaTool(toolName: string, args: Record<string, any>): Promise<any> {
+    if (toolName === 'ollama_chat') {
+      // チャットエンドポイントを使用
+      return this.callOllamaChat(args.messages, args.model || this.ollamaModel, args.options);
+    } else if (toolName.startsWith('ollama_')) {
+      // モデル名を取得（ツール名からollama_プレフィックスを削除）
+      const modelName = toolName.substring(7).replace(/_/g, ':');
+      
+      // 完了エンドポイントを使用
+      return this.callOllamaCompletion(args.prompt, modelName, args.options);
+    } else {
+      throw new Error(`未知のOllamaツール: ${toolName}`);
+    }
+  }
+  
+  /**
+   * Ollamaチャットを呼び出す
+   */
+  private async callOllamaChat(messages: any[], model: string, options: any = {}): Promise<any> {
     try {
-      // ツール名からサーバーIDとツール名を抽出
-      const { serverId, toolName: originalToolName } = this.extractServerAndToolName(toolName);
+      const response = await fetch(`${this.ollamaBaseUrl}/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: model || this.ollamaModel,
+          messages,
+          options
+        })
+      });
       
-      // サーバーが実行中かチェック
-      if (!this.serverManager.isServerRunning(serverId)) {
-        throw new Error(`MCPサーバー "${serverId}" は実行されていません`);
+      if (!response.ok) {
+        throw new Error(`Ollamaサーバーエラー: ${response.status} ${response.statusText}`);
       }
       
-      // クライアントを取得
-      const client = this.clients.get(serverId);
-      if (!client) {
-        throw new Error(`MCPクライアント "${serverId}" が見つかりません`);
-      }
-      
-      console.log(`MCPツール呼び出し: ${serverId}.${originalToolName}(${JSON.stringify(args)})`);
-      
-      // ツールを呼び出し
-      const result = await client.callTool(originalToolName, args);
-      
-      // 結果を加工して返す
-      let response = '';
-      if (result.content) {
-        for (const content of result.content) {
-          if (content.type === 'text' && content.text) {
-            response += content.text;
-          } else if (content.type === 'resource' && content.resource) {
-            if (content.resource.text) {
-              response += content.resource.text;
-            } else {
-              response += `[Resource: ${content.resource.uri} (${content.resource.mimeType})]`;
-            }
-          }
-        }
-      }
+      const result = await response.json();
       
       return {
-        result: response,
-        isError: result.isError
+        content: [{
+          type: 'text',
+          text: result.message?.content || JSON.stringify(result)
+        }],
+        isError: false
       };
     } catch (error) {
-      console.error('Ollamaツール呼び出しエラー:', error instanceof Error ? error.message : String(error));
+      console.error('Ollamaチャット呼び出しエラー:', error);
       return {
-        result: `ツール呼び出しエラー: ${error instanceof Error ? error.message : String(error)}`,
+        content: [{
+          type: 'text',
+          text: `エラー: ${error instanceof Error ? error.message : String(error)}`
+        }],
         isError: true
       };
     }
   }
-
+  
   /**
-   * ブリッジをシャットダウン
+   * Ollama完了を呼び出す
    */
-  async shutdown(): Promise<void> {
+  private async callOllamaCompletion(prompt: string, model: string, options: any = {}): Promise<any> {
     try {
-      // すべてのMCPサーバーを停止
-      await this.serverManager.stopAllServers();
-      console.log('すべてのMCPサーバーを停止しました');
+      const response = await fetch(`${this.ollamaBaseUrl}/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: model || this.ollamaModel,
+          prompt,
+          options
+        })
+      });
       
-      // クライアントをクリア
-      this.clients.clear();
-      this.toolCache.clear();
+      if (!response.ok) {
+        throw new Error(`Ollamaサーバーエラー: ${response.status} ${response.statusText}`);
+      }
+      
+      const result = await response.json();
+      
+      return {
+        content: [{
+          type: 'text',
+          text: result.choices?.[0]?.text || result.completion || JSON.stringify(result)
+        }],
+        isError: false
+      };
     } catch (error) {
-      console.error('MCPブリッジのシャットダウンエラー:', error instanceof Error ? error.message : String(error));
+      console.error('Ollama完了呼び出しエラー:', error);
+      return {
+        content: [{
+          type: 'text',
+          text: `エラー: ${error instanceof Error ? error.message : String(error)}`
+        }],
+        isError: true
+      };
     }
   }
 }

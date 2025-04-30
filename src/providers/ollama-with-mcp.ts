@@ -53,12 +53,17 @@ export class OllamaWithMCPProvider extends OllamaProvider {
 
   constructor(config: OllamaWithMCPConfig) {
     super(config);
-    this.mcpEnabled = config.mcpEnabled ?? false;
     
-    if (this.mcpEnabled) {
-      this.mcpBridge = new OllamaMCPBridge();
-    }
+    // MCPブリッジを初期化
+    this.mcpBridge = new OllamaMCPBridge({
+      baseUrl: config.baseURL || 'http://localhost:11434/v1',
+      model: config.model || 'qwen3'
+    });
+    
+    // MCP有効/無効の設定
+    this.mcpEnabled = config.mcpEnabled !== undefined ? config.mcpEnabled : false;
   }
+  
 
   /**
    * ツール機能を有効にしたチャット完了
@@ -201,4 +206,5 @@ export class OllamaWithMCPProvider extends OllamaProvider {
       await this.mcpBridge.shutdown();
     }
   }
+
 }

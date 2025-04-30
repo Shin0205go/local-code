@@ -7,16 +7,21 @@ import { saveConfig, loadConfig, OllamaCodeConfig } from './config.js';
 import { MCPServerManager } from './mcp/server.js';
 import { ServerConfig } from './mcp/config.js';
 import { OllamaMCPBridge } from './mcp/ollama-bridge.js';
-import { MCPClient, MCPMultiClient, MCPTool } from './mcp/client.js';
 import chalk from 'chalk';
+// 必要なモジュールをインポート
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { EmptyResultSchema } from "@modelcontextprotocol/sdk/types.js";
+// 自作モジュールからの関数インポート
+import { getAllTools, callTool } from './mcp/client.js';
 
 // MCPサーバーマネージャー
 let mcpServerManager: MCPServerManager | null = null;
 // OllamaMCPブリッジ
 let ollamaMCPBridge: OllamaMCPBridge | null = null;
-// MCPマルチクライアント（複数サーバー対応）
-let mcpMultiClient: MCPMultiClient | null = null;
-
+// MCP SDKクライアントを格納するマップ
+let sdkMcpClients: Map<string, Client> = new Map();
 
 // 対話式チャット - メイン実装
 export async function startChat(config: OllamaCodeConfig): Promise<void> {
@@ -207,6 +212,23 @@ export async function startChat(config: OllamaCodeConfig): Promise<void> {
   if (mcpEnabled && mcpServerManager) {
     console.log(chalk.gray('MCPサーバーをシャットダウンしています...'));
     try {
+      // SDKクライアントを切断
+      for (const [serverId, client] of sdkMcpClients.entries()) {
+        try {
+          // shutdownメソッドを呼び出す（サポートされている場合）
+          try {
+            await client.request({ method: "shutdown", params: {} }, EmptyResultSchema);
+          } catch (e) {
+            // shutdownがサポートされていない場合は無視
+            console.log(`サーバー ${serverId} はshutdownメソッドをサポートしていません`);
+          }
+          console.log(`サーバー ${serverId} との接続を切断しました`);
+        } catch (e) {
+          console.warn(`サーバー ${serverId} との切断中にエラーが発生しました:`, e);
+        }
+      }
+      
+      // サーバープロセスを停止
       await mcpServerManager.stopAllServers();
       console.log(chalk.green('MCPサーバーをシャットダウンしました。'));
     } catch (error) {
@@ -394,12 +416,11 @@ export async function executeTask(config: OllamaCodeConfig, task: string): Promi
       
       // MCPサーバーを自動起動
       try {
-        await initializeMcpServers();
+        const startedServers = await initializeMcpServers();
         
         // 起動中のMCPサーバー情報を取得
-        const runningServers = mcpServerManager.getRunningServers();
-        if (runningServers.length > 0) {
-          mcpContext = `使用可能なMCPサーバー: ${runningServers.join(', ')}\n\n`;
+        if (startedServers.length > 0) {
+          mcpContext = `使用可能なMCPサーバー: ${startedServers.join(', ')}\n\n`;
         }
       } catch (error) {
         console.warn('MCPサーバー初期化エラー:', error instanceof Error ? error.message : String(error));
@@ -407,7 +428,6 @@ export async function executeTask(config: OllamaCodeConfig, task: string): Promi
     }
   }
   
-
   // 現在のディレクトリ情報
   const currentDir = process.cwd();
   const dirInfo = fs.readdirSync(currentDir).slice(0, 20).join(', ');
@@ -486,6 +506,7 @@ export async function executeTask(config: OllamaCodeConfig, task: string): Promi
   }
 }
 
+
 // MCPサーバー初期化 - 自動で全てのサーバーを起動
 async function initializeMcpServers(): Promise<string[]> {
   try {
@@ -518,7 +539,7 @@ async function initializeMcpServers(): Promise<string[]> {
           return { id: config.id, success: true };
         }
         
-        // console.log(`サーバー起動: ${config.name} (${config.id})`);
+        // サーバー起動
         await mcpServerManager?.startServer(config);
         return { id: config.id, success: true };
       } catch (error) {
@@ -530,31 +551,48 @@ async function initializeMcpServers(): Promise<string[]> {
     const results = await Promise.all(startPromises);
     const successful = results.filter(r => r.success).map(r => r.id);
     
-    // マルチクライアントを初期化
-    if (mcpMultiClient === null) {
-      mcpMultiClient = new MCPMultiClient();
-      
-      // 各サーバーのクライアントを追加
-      for (const serverId of successful) {
-        const config = serverConfigs.find((c: ServerConfig) => c.id === serverId);
-        if (config) {
-          // 簡易的にURLを構築（実際にはサーバーから取得すべき）
-          const url = `http://localhost:3456/api/mcp/${serverId}`;
-          const client = new MCPClient({
-            serverUrl: url,
-            serverId: serverId
+    // 既存のクライアントマップをクリア
+    sdkMcpClients.clear();
+    
+    // 各サーバーに接続
+    for (const serverId of successful) {
+      const config = serverConfigs.find((c: ServerConfig) => c.id === serverId);
+      if (config) {
+        try {
+          // MCP SDKのStdioClientTransportを作成
+          const transport = new StdioClientTransport({
+            command: config.command,
+            args: config.args || [],
+            env: config.env ? { ...config.env } : undefined
           });
           
-          mcpMultiClient.addClient(serverId, client);
+          // MCP SDKのClientを初期化
+          const client = new Client(
+            {
+              name: "ollama-code-client",
+              version: "1.0.0",
+            },
+            {
+              capabilities: {
+                tools: {},
+              },
+            }
+          );
+          
+          // クライアントを接続
+          await client.connect(transport);
+          console.log(`サーバー ${serverId} にMCP SDKクライアントを接続しました`);
+          
+          // クライアントをマップに追加
+          sdkMcpClients.set(serverId, client);
+        } catch (error) {
+          console.error(`サーバー ${serverId} への接続に失敗しました:`, error);
         }
       }
-      
-      // マルチクライアントを初期化
-      await mcpMultiClient.initialize();
     }
     
-    console.log(`MCPサーバー初期化完了: ${successful.length}/${serverConfigs.length}個のサーバーが起動しました`);
-    return successful;
+    console.log(`MCPサーバー初期化完了: ${sdkMcpClients.size}/${serverConfigs.length}個のサーバーが接続されました`);
+    return Array.from(sdkMcpClients.keys());
   } catch (error) {
     console.error('MCPサーバー初期化エラー:', error instanceof Error ? error.message : String(error));
     return [];
@@ -622,19 +660,10 @@ export async function executeMcpCommand(serverId: string, command: string): Prom
     
     console.log(`サーバー ${serverId} にコマンド実行: ${command}`);
     
-    // マルチクライアントが初期化されていない場合は初期化
-    if (!mcpMultiClient) {
-      await initializeMcpServers();
-      
-      if (!mcpMultiClient) {
-        throw new Error('MCPマルチクライアントの初期化に失敗しました');
-      }
-    }
-    
     // commandがtools/listの場合
     if (command === 'tools/list') {
       console.log('利用可能なツールを取得...');
-      const allTools = await mcpMultiClient.getAllTools();
+      const allTools = await getAllTools(sdkMcpClients);
       
       // サーバーごとにツールを表示
       let toolCount = 0;
@@ -671,31 +700,24 @@ export async function executeMcpCommand(serverId: string, command: string): Prom
         const args = JSON.parse(argsJson);
         console.log(`ツール呼び出し: ${toolName} ${JSON.stringify(args)}`);
         
-        // tools/listを使って適切なサーバーからツールを呼び出す
-        const result = await mcpMultiClient.callTool(toolName, args);
+        // ツールを呼び出す
+        const result = await callTool(sdkMcpClients, toolName, args);
         
         console.log('\n=== 実行結果 ===\n');
         
-        if (result.isError) {
-          // content配列が存在し、要素があることを確認してからtextを取得
-          const textContent = result.content && Array.isArray(result.content) && result.content.length > 0 ? 
-            result.content.find((c: any) => c.type === 'text')?.text : 
-            '詳細なエラー情報がありません';
-          
-          console.error('エラーが発生しました:', textContent);
-        } else {
-          // テキスト内容を表示
-          const textContent = result.content && Array.isArray(result.content) ? 
-            result.content.filter((c: any) => c.type === 'text')
-              .map((c: any) => c.text).join('\n') :
-            '';
+        // 結果の処理
+        if (result.content && Array.isArray(result.content)) {
+          // テキスト内容を表示 - 型アノテーションを追加
+          const textContent = result.content
+            .filter((c: any) => c.type === 'text')
+            .map((c: any) => c.text)
+            .join('\n');
           
           console.log(textContent || '返答テキストがありません');
           
-          // リソース内容を表示
-          const resources = result.content && Array.isArray(result.content) ? 
-            result.content.filter((c: any) => c.type === 'resource' && c.resource) : 
-            [];
+          // リソース内容を表示 - 型アノテーションを追加
+          const resources = result.content
+            .filter((c: any) => c.type === 'resource' && c.resource);
           
           if (resources.length > 0) {
             console.log('\n=== リソース ===\n');
@@ -707,9 +729,12 @@ export async function executeMcpCommand(serverId: string, command: string): Prom
               }
             }
           }
+        } else {
+          // 構造化されていない結果の場合
+          console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
         }
       } catch (e) {
-        console.error('引数のJSONパースに失敗:', e);
+        console.error('エラー:', e);
       }
     } else {
       console.error('未知のコマンド:', command);
@@ -721,3 +746,4 @@ export async function executeMcpCommand(serverId: string, command: string): Prom
     console.error('MCPコマンド実行エラー:', error instanceof Error ? error.message : String(error));
   }
 }
+
