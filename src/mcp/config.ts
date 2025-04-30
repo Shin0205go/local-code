@@ -65,7 +65,7 @@ export class ServerConfigManager {
       if (this.config.servers.length === 0) {
         console.warn('設定ファイルにサーバー設定が見つかりません');
       } else {
-        console.log(`${absoluteConfigPath}から${this.config.servers.length}個のサーバー設定を読み込みました`);
+        // console.log(`${absoluteConfigPath}から${this.config.servers.length}個のサーバー設定を読み込みました`);
       }
     } catch (error) {
       console.error('サーバー設定の読み込みに失敗しました:', error);

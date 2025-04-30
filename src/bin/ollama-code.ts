@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { Command } from 'commander';
-import { setupWizard, executeTask, executeMcpCommand, startChat } from '../index.js';
+import { setupWizard, executeTask, startChat, initializeMcpServers } from '../index.js';
 import { loadConfig } from '../config.js';
 import chalk from 'chalk';
+import { MCPServerManager } from '../mcp/server.js';
 
 const program = new Command();
 
@@ -24,6 +25,11 @@ program
       
       // 設定をロード
       const config = loadConfig();
+      
+      // MCPサーバーを先に初期化（設定で有効な場合のみ）
+      if (config.mcp && config.mcp.enabled) {
+        await initializeMcpServers({ logLevel });
+      }
       
       // 引数があればタスク実行、なければ対話モード
       const args = program.args;
@@ -55,47 +61,6 @@ program
 const mcpCommand = program.command('mcp')
   .description('MCPサーバー管理コマンド');
 
-mcpCommand
-  .command('start [serverId]')
-  .description('MCPサーバーを起動')
-  .option('--verbose', 'ログを詳細に表示する（デフォルトは静音モード）')
-  .option('--debug', '詳細なデバッグログを表示する')
-  .action(async (serverId, cmdOptions) => {
-    try {
-      // ログレベルを決定 - デフォルトはquiet
-      const logLevel = cmdOptions.debug ? 'debug' : (cmdOptions.verbose ? 'info' : 'quiet');
-      
-      const { MCPServerManager } = await import('../mcp/server.js');
-      const serverManager = new MCPServerManager();
-      
-      // すべてのサーバーを起動
-      const serverConfigs = await serverManager.loadServerConfigs();
-      
-      if (serverConfigs.length === 0) {
-        console.log('利用可能なMCPサーバーがありません');
-        return;
-      }
-      
-      console.log(`${serverConfigs.length}個のMCPサーバーを起動中...`);
-      
-      for (const config of serverConfigs) {
-        try {
-          // 特定のサーバーIDが指定されている場合はそれのみ起動
-          if (serverId && config.id !== serverId) {
-            continue;
-          }
-          
-          console.log(`${config.name} (${config.id}) を起動中...`);
-          await serverManager.startServer(config, { logLevel });
-          console.log(`${config.name} (${config.id}) を起動しました`);
-        } catch (error) {
-          console.error(`${config.name} (${config.id}) の起動に失敗:`, error instanceof Error ? error.message : String(error));
-        }
-      }
-    } catch (error) {
-      console.error(chalk.red('MCPサーバー起動に失敗:'), error instanceof Error ? error.message : String(error));
-    }
-  });
 
 mcpCommand
   .command('list')
@@ -125,24 +90,6 @@ mcpCommand
     }
   });
 
-program
-  .command('execute <task>')
-  .description('(非推奨) 直接タスクを実行する')
-  .option('--verbose', 'ログを詳細に表示する（デフォルトは静音モード）')
-  .option('--debug', '詳細なデバッグログを表示する')
-  .action(async (task, cmdOptions) => {
-    try {
-      console.log(chalk.yellow('注: "execute" コマンドは非推奨です。代わりに `ollama-code "タスク内容"` を使用してください。'));
-      
-      // ログレベルを決定 - デフォルトはquiet
-      const logLevel = cmdOptions.debug ? 'debug' : (cmdOptions.verbose ? 'info' : 'quiet');
-      
-      const config = loadConfig();
-      await executeTask(config, task, { logLevel });
-    } catch (error) {
-      console.error(chalk.red('実行に失敗:'), error instanceof Error ? error.message : String(error));
-    }
-  });
 
 // 引数を解析
 program.parse();

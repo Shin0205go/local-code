@@ -162,7 +162,7 @@ export class MCPServerManager {
     // サーバーリストから削除
     this.servers.delete(serverId);
     
-    console.log(`サーバー ${serverId} を停止しました`);
+    // console.log(`サーバー ${serverId} を停止しました`);
   }
   
   /**
