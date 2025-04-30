@@ -1,5 +1,6 @@
 /**
- * MCPサーバーの起動と管理を行うモジュール
+ * 改善版 MCPサーバーマネージャー
+ * ツール検出とAPIの効率化をサポート
  */
 
 import { spawn, ChildProcess } from 'child_process';
@@ -7,10 +8,19 @@ import path from 'path';
 import fs from 'fs/promises';
 import { ServerConfigManager, ServerConfig } from './config';
 
-export class MCPServerManager {
+/**
+ * MCPサーバーマネージャーインターフェース
+ */
+export interface MCPServerManagerInterface {
+  getServerUrls(): Promise<Record<string, string>>;
+  getRunningServers(): string[];
+}
+
+export class MCPServerManager implements MCPServerManagerInterface {
   private configManager: ServerConfigManager;
   private serverProcesses: Map<string, ChildProcess> = new Map();
   private configPath: string;
+  private serverEndpoints: Map<string, string> = new Map();
 
   /**
    * MCPサーバーマネージャーを初期化
@@ -44,6 +54,30 @@ export class MCPServerManager {
   }
 
   /**
+   * すべてのサーバーのURLを取得
+   * @returns サーバーIDからURLへのマッピング
+   */
+  async getServerUrls(): Promise<Record<string, string>> {
+    // サーバー設定をロード
+    const configs = await this.loadServerConfigs();
+    const urls: Record<string, string> = {};
+
+    for (const config of configs) {
+      // サーバーが実行中であれば、すでに設定されているエンドポイントを使用
+      if (this.serverEndpoints.has(config.id)) {
+        urls[config.id] = this.serverEndpoints.get(config.id)!;
+      } else {
+        // デフォルトのエンドポイントを設定
+        // 実際の実装では、サーバーから正確なエンドポイントを取得する必要があるかもしれない
+        // ここでは簡易的に実装
+        urls[config.id] = `http://localhost:3000/api/mcp/${config.id}`;
+      }
+    }
+
+    return urls;
+  }
+
+  /**
    * MCPサーバーを起動する
    * @param serverConfig サーバー設定
    * @param debug デバッグ出力を表示するか
@@ -65,10 +99,17 @@ export class MCPServerManager {
         // プロセスを保存
         this.serverProcesses.set(serverConfig.id, mcpServer);
 
-        // ログ出力
+        // ログ出力とエンドポイント検出
         mcpServer.stdout.on('data', (data) => {
           const output = data.toString().trim();
           if (output) {
+            // エンドポイント情報が含まれているか確認
+            const endpointMatch = output.match(/Listening on (http:\/\/[^\s]+)/);
+            if (endpointMatch) {
+              this.serverEndpoints.set(serverConfig.id, endpointMatch[1]);
+              console.log(`サーバー ${serverConfig.id} のエンドポイントを検出: ${endpointMatch[1]}`);
+            }
+
             if (debug) {
               console.log(`[${serverConfig.id}:stdout] ${output}`);
             } else if (output.includes('Error') || output.includes('error')) {
@@ -93,6 +134,7 @@ export class MCPServerManager {
         mcpServer.on('close', (code) => {
           console.log(`MCP Server ${serverConfig.id} exited with code ${code}`);
           this.serverProcesses.delete(serverConfig.id);
+          this.serverEndpoints.delete(serverConfig.id);
         });
 
         // 少し待ってからプロセスを返す（起動完了を待つ）
@@ -158,6 +200,9 @@ export class MCPServerManager {
           resolve();
         }, 3000);
       });
+
+      // エンドポイント情報を削除
+      this.serverEndpoints.delete(serverId);
     }
   }
 
@@ -194,5 +239,13 @@ export class MCPServerManager {
    */
   getServerProcess(serverId: string): ChildProcess | undefined {
     return this.serverProcesses.get(serverId);
+  }
+
+  /**
+   * サーバーエンドポイントを取得
+   * @param serverId サーバーID
+   */
+  getServerEndpoint(serverId: string): string | undefined {
+    return this.serverEndpoints.get(serverId);
   }
 }

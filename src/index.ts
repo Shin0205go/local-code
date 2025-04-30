@@ -1,22 +1,39 @@
 import fs from 'fs';
 import path from 'path';
 import inquirer from 'inquirer';
-import { OllamaProvider } from './providers/ollama';
-import { DockerSandbox } from './sandbox/docker';
-import { GitHubMCP } from './mcp/github';
-import { saveConfig, loadConfig, OllamaCodeConfig } from './config';
-import { MCPServerManager } from './mcp/server';
-import { ServerConfig } from './mcp/config';
-import { OllamaMCPBridge } from './mcp/ollama-bridge';
-import { executeMCPChat } from './commands/mcp-chat';
+import { OllamaProvider } from './providers/ollama.js';
+import { DockerSandbox } from './sandbox/docker.js';
+import { GitHubMCP } from './mcp/github.js';
+import { saveConfig, loadConfig, OllamaCodeConfig } from './config.js';
+import { MCPServerManager } from './mcp/server.js';
+import { ServerConfig } from './mcp/config.js';
+import { OllamaMCPBridge } from './mcp/ollama-bridge.js';
+import { executeMCPChat } from './commands/mcp-chat.js';
+import { MCPClient, MCPMultiClient, MCPTool } from './mcp/client.js';
 
 // MCPサーバーマネージャー
 let mcpServerManager: MCPServerManager | null = null;
 // OllamaMCPブリッジ
 let ollamaMCPBridge: OllamaMCPBridge | null = null;
+// MCPマルチクライアント（複数サーバー対応）
+let mcpMultiClient: MCPMultiClient | null = null;
 
 // エクスポート - コマンド
-export { executeMCPChat } from './commands/mcp-chat';
+export { executeMCPChat } from './commands/mcp-chat.js';
+
+// 対話式チャット - 追加
+export async function startChat(config: OllamaCodeConfig): Promise<void> {
+  console.log('対話モードを開始します...');
+  console.log('終了するには "exit" または "quit" と入力してください。');
+  
+  // プロバイダーを作成
+  const provider = new OllamaProvider(config);
+  
+  // ここに対話式チャットのコードを追加
+  console.log('申し訳ありませんが、対話モードはまだ実装されていません。');
+  console.log('代わりに、コマンドラインで直接タスクを指定してください。');
+  console.log('例: ollama-code "ファイルリストを取得するJavaScriptコードを生成して"');
+}
 
 // セットアップウィザード
 export async function setupWizard(): Promise<void> {
@@ -43,7 +60,7 @@ export async function setupWizard(): Promise<void> {
         type: 'list',
         name: 'modelName',
         message: '使用するモデルを選択：',
-        choices: models.map(model => model.name)
+        choices: models.map((model: any) => model.name)
       }
     ]);
     
@@ -139,7 +156,7 @@ async function setupMcpServers(): Promise<void> {
     
     const startedServers: string[] = [];
     for (const serverId of selectedServers) {
-      const serverConfig = serverConfigs.find(s => s.id === serverId);
+      const serverConfig = serverConfigs.find((s: ServerConfig) => s.id === serverId);
       if (serverConfig) {
         try {
           console.log(`${serverConfig.name} (${serverId}) を起動中...`);
@@ -160,60 +177,6 @@ async function setupMcpServers(): Promise<void> {
   } catch (error) {
     console.error('MCPサーバーセットアップエラー:', error instanceof Error ? error.message : String(error));
   }
-}
-
-// コード解析
-export async function analyzeCode(config: OllamaCodeConfig, directory: string): Promise<void> {
-  console.log(`ディレクトリを解析中: ${directory}`);
-  
-  // プロバイダーを作成
-  const provider = new OllamaProvider(config);
-  
-  // 関連ファイルを取得
-  const files = await getRelevantFiles(directory);
-  console.log(`関連ファイルが${files.length}個見つかりました。`);
-  
-  // ファイル内容を読み込む（最大10ファイル、合計30KB）
-  const fileContents: { path: string; content: string }[] = [];
-  let totalSize = 0;
-  const maxSize = 30 * 1024; // 30KB
-  
-  for (let i = 0; i < Math.min(files.length, 10); i++) {
-    const filePath = files[i];
-    const content = fs.readFileSync(filePath, 'utf8');
-    
-    totalSize += content.length;
-    if (totalSize > maxSize) {
-      console.log(`サイズ制限に達しました。${i}個のファイルを解析します。`);
-      break;
-    }
-    
-    fileContents.push({
-      path: filePath,
-      content: content.length > 2000 ? content.substring(0, 2000) + '...' : content
-    });
-  }
-  
-  // モデル用のメッセージを作成
-  const messages = [
-    {
-      role: 'system',
-      content: 'あなたはコードベースを解析し、明確かつ簡潔に説明するエキスパートプログラマーです。構造、パターン、主要コンポーネントを特定し、必要に応じて改善提案も行ってください。'
-    },
-    {
-      role: 'user',
-      content: `以下のコードベースを解析してください:\n\n${
-        fileContents.map(f => `FILE: ${f.path}\n\n${f.content}`).join('\n\n')
-      }`
-    }
-  ];
-  
-  // モデルに送信
-  console.log('モデルにコードの解析を依頼中...');
-  const response = await provider.chatCompletion(messages);
-  
-  console.log('\n=== 解析結果 ===\n');
-  console.log(response.choices[0].message.content);
 }
 
 // タスク実行
@@ -389,6 +352,29 @@ async function initializeMcpServers(): Promise<string[]> {
     const results = await Promise.all(startPromises);
     const successful = results.filter(r => r.success).map(r => r.id);
     
+    // マルチクライアントを初期化
+    if (mcpMultiClient === null) {
+      mcpMultiClient = new MCPMultiClient();
+      
+      // 各サーバーのクライアントを追加
+      for (const serverId of successful) {
+        const config = serverConfigs.find((c: ServerConfig) => c.id === serverId);
+        if (config) {
+          // 簡易的にURLを構築（実際にはサーバーから取得すべき）
+          const url = `http://localhost:3456/api/mcp/${serverId}`;
+          const client = new MCPClient({
+            serverUrl: url,
+            serverId: serverId
+          });
+          
+          mcpMultiClient.addClient(serverId, client);
+        }
+      }
+      
+      // マルチクライアントを初期化
+      await mcpMultiClient.initialize();
+    }
+    
     console.log(`MCPサーバー初期化完了: ${successful.length}/${serverConfigs.length}個のサーバーが起動しました`);
     return successful;
   } catch (error) {
@@ -458,21 +444,40 @@ export async function executeMcpCommand(serverId: string, command: string): Prom
     
     console.log(`サーバー ${serverId} にコマンド実行: ${command}`);
     
-    // OllamaMCPブリッジを初期化
-    if (!ollamaMCPBridge) {
-      ollamaMCPBridge = new OllamaMCPBridge();
-      await ollamaMCPBridge.initialize();
+    // マルチクライアントが初期化されていない場合は初期化
+    if (!mcpMultiClient) {
+      await initializeMcpServers();
+      
+      if (!mcpMultiClient) {
+        throw new Error('MCPマルチクライアントの初期化に失敗しました');
+      }
     }
     
     // commandがtools/listの場合
     if (command === 'tools/list') {
       console.log('利用可能なツールを取得...');
-      const { tools } = await ollamaMCPBridge.getOllamaTools();
-      console.log(`${tools.length}個のツールが見つかりました:`);
+      const allTools = await mcpMultiClient.getAllTools();
       
-      for (const tool of tools) {
-        console.log(`- ${tool.function.name}: ${tool.function.description}`);
+      // サーバーごとにツールを表示
+      let toolCount = 0;
+      for (const [serverId, tools] of Object.entries(allTools)) {
+        console.log(`\n=== サーバー ${serverId} のツール ===`);
+        
+        // toolsが配列であることを確認してから処理
+        const toolArray = Array.isArray(tools) ? tools : [];
+        
+        if (toolArray.length === 0) {
+          console.log('ツールはありません');
+          continue;
+        }
+        
+        for (const tool of toolArray) {
+          console.log(`- ${tool.name}: ${tool.description || '説明なし'}`);
+          toolCount++;
+        }
       }
+      
+      console.log(`\n合計${toolCount}個のツールが見つかりました`);
     } else if (command.startsWith('tools/call ')) {
       // tools/call の場合、フォーマット: tools/call ツール名 引数(JSON)
       const parts = command.split(' ');
@@ -488,13 +493,42 @@ export async function executeMcpCommand(serverId: string, command: string): Prom
         const args = JSON.parse(argsJson);
         console.log(`ツール呼び出し: ${toolName} ${JSON.stringify(args)}`);
         
-        const result = await ollamaMCPBridge.callOllamaTool(toolName, args);
+        // tools/listを使って適切なサーバーからツールを呼び出す
+        const result = await mcpMultiClient.callTool(toolName, args);
         
         console.log('\n=== 実行結果 ===\n');
-        console.log(result.result);
         
         if (result.isError) {
-          console.error('エラーが発生しました');
+          // content配列が存在し、要素があることを確認してからtextを取得
+          const textContent = result.content && Array.isArray(result.content) && result.content.length > 0 ? 
+            result.content.find((c: any) => c.type === 'text')?.text : 
+            '詳細なエラー情報がありません';
+          
+          console.error('エラーが発生しました:', textContent);
+        } else {
+          // テキスト内容を表示
+          const textContent = result.content && Array.isArray(result.content) ? 
+            result.content.filter((c: any) => c.type === 'text')
+              .map((c: any) => c.text).join('\n') :
+            '';
+          
+          console.log(textContent || '返答テキストがありません');
+          
+          // リソース内容を表示
+          const resources = result.content && Array.isArray(result.content) ? 
+            result.content.filter((c: any) => c.type === 'resource' && c.resource) : 
+            [];
+          
+          if (resources.length > 0) {
+            console.log('\n=== リソース ===\n');
+            for (const resource of resources) {
+              console.log(`URI: ${resource.resource?.uri}`);
+              console.log(`MIMEタイプ: ${resource.resource?.mimeType}`);
+              if (resource.resource?.text) {
+                console.log(`内容:\n${resource.resource.text}`);
+              }
+            }
+          }
         }
       } catch (e) {
         console.error('引数のJSONパースに失敗:', e);

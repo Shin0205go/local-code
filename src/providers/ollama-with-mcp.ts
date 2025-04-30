@@ -16,6 +16,9 @@ interface OllamaWithMCPConfig {
 interface ChatMessage {
   role: string;
   content: string;
+  tool_call_id?: string;
+  tool_calls?: ToolCall[];
+  [key: string]: any; // 他の可能性のあるプロパティ
 }
 
 interface ToolCall {
@@ -37,11 +40,7 @@ interface ChatCompletionOptions {
 
 interface ChatCompletionResponse {
   choices: {
-    message: {
-      role: string;
-      content: string;
-      tool_calls?: ToolCall[];
-    };
+    message: ChatMessage;
     index: number;
     finish_reason: string;
   }[];
@@ -88,7 +87,11 @@ export class OllamaWithMCPProvider extends OllamaProvider {
       const completion = await super.chatCompletion(messages, optionsWithTools);
 
       // ツール呼び出しがあるか確認
-      if (completion.choices && completion.choices[0] && completion.choices[0].message.tool_calls) {
+      if (completion.choices && 
+          completion.choices[0] && 
+          completion.choices[0].message && 
+          'tool_calls' in completion.choices[0].message && 
+          completion.choices[0].message.tool_calls) {
         // ツール呼び出しを処理
         return await this.processToolCalls(completion, messages);
       }
@@ -122,11 +125,18 @@ export class OllamaWithMCPProvider extends OllamaProvider {
     const newMessages = [...messages];
     
     // アシスタントのレスポンスをメッセージに追加
-    newMessages.push({
-      role: 'assistant',
-      content: completion.choices[0].message.content || '',
-      ...completion.choices[0].message // tool_callsを含める
-    } as any);
+    // スプレッド演算子を先に使用して、後から特定のプロパティを上書きしないようにする
+    const messageWithToolCalls = {
+      ...completion.choices[0].message,
+      role: 'assistant' // 明示的に役割を設定
+    };
+    
+    // contentが空文字列の場合でも明示的に設定する
+    if (messageWithToolCalls.content === undefined) {
+      messageWithToolCalls.content = '';
+    }
+    
+    newMessages.push(messageWithToolCalls as ChatMessage);
 
     // 各ツール呼び出しを処理して結果をメッセージに追加
     for (const toolCall of toolCalls) {
@@ -150,7 +160,7 @@ export class OllamaWithMCPProvider extends OllamaProvider {
             role: 'tool',
             content: toolResult.result,
             tool_call_id: toolCall.id
-          } as any);
+          } as ChatMessage);
           
           console.log(`ツール "${toolName}" 実行結果:`, toolResult.result.substring(0, 100) + (toolResult.result.length > 100 ? '...' : ''));
         } catch (error) {
@@ -161,7 +171,7 @@ export class OllamaWithMCPProvider extends OllamaProvider {
             role: 'tool',
             content: `ツール呼び出しエラー: ${error instanceof Error ? error.message : String(error)}`,
             tool_call_id: toolCall.id
-          } as any);
+          } as ChatMessage);
         }
       }
     }

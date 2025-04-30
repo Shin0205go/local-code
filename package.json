@@ -8,13 +8,19 @@
   },
   "type": "module",
   "scripts": {
-    "start": "node bin/ollama-code.js",
+    "start": "node ./bin/ollama-code.js",
+    "prebuild": "npm run clean",
     "build": "tsc",
+    "postbuild": "npm run build:bin",
+    "build:bin": "chmod +x ./bin/ollama-code.js",
     "watch": "tsc --watch",
-    "dev": "tsc && node bin/ollama-code.js",
-    "setup": "node bin/ollama-code.js setup",
-    "mcp-chat": "node bin/ollama-code.js mcp-chat",
-    "clean": "rm -rf dist"
+    "dev": "npm run build && npm start",
+    "presetup": "npm run build",
+    "setup": "node ./bin/ollama-code.js setup",
+    "premcp-chat": "npm run build",
+    "mcp-chat": "node ./bin/ollama-code.js mcp-chat",
+    "clean": "rm -rf dist",
+    "prepare": "npm run build"
   },
   "keywords": [
     "ollama",

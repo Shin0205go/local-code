@@ -1,7 +1,7 @@
-#!/usr/bin/env node
+#!/usr/bin/
 
 import { Command } from 'commander';
-import { setupWizard, analyzeCode, executeTask, executeMcpCommand } from '../index.js';
+import { setupWizard, executeTask, executeMcpCommand } from '../index.js';
 import { loadConfig } from '../config.js';
 import chalk from 'chalk';
 
@@ -20,18 +20,6 @@ program
       await setupWizard();
     } catch (error: any) {
       console.error(chalk.red('セットアップに失敗:'), error.message);
-    }
-  });
-
-program
-  .command('analyze [directory]')
-  .description('ディレクトリ内のコードを解析')
-  .action(async (directory = '.') => {
-    try {
-      const config = loadConfig();
-      await analyzeCode(config, directory);
-    } catch (error: any) {
-      console.error(chalk.red('解析に失敗:'), error.message);
     }
   });
 
@@ -55,8 +43,9 @@ program
       }
       
       if (options.mcp) {
-        if (!config.mcp) config.mcp = {};
-        config.mcp.enabled = true;
+        // 空のオブジェクトに初期化する代わりに、enabledプロパティを持つオブジェクトを作成
+        if (!config.mcp) config.mcp = { enabled: true };
+        else config.mcp.enabled = true;
       }
       
       await executeTask(config, task);
