@@ -83,5 +83,5 @@ mcpCommand
   });
 
 
-// 引数を解析
-program.parse();
+// 引数を解析 (非同期アクションに対応)
+program.parseAsync();
