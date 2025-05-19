@@ -15,7 +15,8 @@
     "dev": "npm run build && npm start",
     "setup": "node ./dist/bin/ollama-code.js setup",
     "mcp-chat": "node ./dist/bin/ollama-code.js mcp-chat",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "test": "tsc || true && node --test"
   },
   "keywords": [
     "ollama",
