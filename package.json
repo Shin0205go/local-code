@@ -4,22 +4,20 @@
   "description": "OllamaモデルとMCPを活用したコーディング支援CLI",
   "main": "dist/index.js",
   "bin": {
-    "ollama-code": "./bin/ollama-code.js"
+    "ollama-code": "./dist/bin/ollama-code.js"
   },
   "type": "module",
   "scripts": {
-    "prebuild": "tsc",
-    "build": "npm run build:bin",
-    "build:bin": "mkdir -p ./bin && cp ./dist/bin/ollama-code.js ./bin/ollama-code.js && chmod +x ./bin/ollama-code.js",
-    "postbuild": "",
-    "start": "node ./bin/ollama-code.js",
+    "build": "tsc",
+    "postbuild": "chmod +x ./dist/bin/ollama-code.js",
+    "start": "node ./dist/bin/ollama-code.js",
     "watch": "tsc --watch",
     "dev": "npm run build && npm start",
     "presetup": "npm run build",
-    "setup": "node ./bin/ollama-code.js setup",
+    "setup": "node ./dist/bin/ollama-code.js setup",
     "premcp-chat": "npm run build",
-    "mcp-chat": "node ./bin/ollama-code.js mcp-chat",
-    "clean": "rm -rf dist bin"
+    "mcp-chat": "node ./dist/bin/ollama-code.js mcp-chat",
+    "clean": "rm -rf dist"
   },
   "keywords": [
     "ollama",
@@ -39,7 +37,8 @@
     "dotenv": "^16.3.1",
     "inquirer": "^8.2.5",
     "node-fetch": "^3.3.2",
-    "ollama": "^0.5.15"
+    "ollama": "^0.5.15",
+    "@modelcontextprotocol/sdk": "1.11.4"
   },
   "devDependencies": {
     "@types/inquirer": "^8.2.5",
