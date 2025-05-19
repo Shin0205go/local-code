@@ -660,7 +660,7 @@ function extractToolCalls(content: string): { tool: string; args: any }[] {
   while ((match = regex2.exec(content)) !== null) {
     // regex1ですでに処理したマッチはスキップ
     const fullMatch = match[0];
-    if (regex1.test(fullMatch)) continue;
+    if (new RegExp(regex1).test(fullMatch)) continue;
     
     try {
       const tool = match[1];   // ツール名（例: ls）
