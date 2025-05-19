@@ -17,6 +17,8 @@ git clone https://github.com/yourusername/ollama-code.git
 cd ollama-code
 npm install
 npm run build
+# MCP機能を利用するためのSDKはバージョンを固定しています
+# (package.jsonで@modelcontextprotocol/sdk@1.11.4)
 npm link
 ```
 
@@ -27,6 +29,9 @@ npm link
 ```bash
 ollama-code setup
 ```
+
+`npm start` を実行すると自動的にビルドが行われ、`dist` ディレクトリから CLI
+が起動します。
 
 ### 基本的な使い方
 

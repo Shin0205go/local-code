@@ -2,15 +2,17 @@
 
 ## package.jsonの修正
 
-1. `bin`セクションの参照先を修正
-   - 修正前: `"./dist/bin/ollama-code.js"`
-   - 修正後: `"./bin/ollama-code.js"`
+1. `bin`セクションの参照先を再度修正
+   - 修正前: `"./bin/ollama-code.js"`
+   - 修正後: `"./dist/bin/ollama-code.js"`
 
 2. スクリプトの依存関係を明示化
    - `presetup`, `premcp-chat`などのスクリプトを追加し、必要なビルドを事前に実行するように修正
    - `build`スクリプトを`prebuild`, `build`, `postbuild`に分割して処理を明確化
+3. `prestart`スクリプトを追加し、`npm start`実行時に自動ビルド
+4. MCP SDK依存を追加: `@modelcontextprotocol/sdk@1.11.4`
 
-3. ビルドプロセスの整理
+5. ビルドプロセスの整理
    - TypeScriptのコンパイルとバイナリファイルの処理を分離
    - `build:bin`スクリプトを追加して実行権限設定のみを担当
 
