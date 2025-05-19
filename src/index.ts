@@ -15,6 +15,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { EmptyResultSchema } from "@modelcontextprotocol/sdk/types.js";
 // 自作モジュールからの関数インポート
 import { getAllTools, callTool } from './mcp/client.js';
+import { extractToolCalls, extractCodeBlocks } from './utils/extract.js';
 
 // MCPサーバーマネージャー
 let mcpServerManager: MCPServerManager | null = null;
@@ -720,3 +721,4 @@ async function findServerForTool(
   }
   return undefined;
 }
+
