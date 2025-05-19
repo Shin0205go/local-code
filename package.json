@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc",
     "postbuild": "chmod +x ./dist/bin/ollama-code.js",
+    "prestart": "npm run build",
     "start": "node ./dist/bin/ollama-code.js",
     "watch": "tsc --watch",
     "dev": "npm run build && npm start",

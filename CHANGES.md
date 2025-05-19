@@ -34,3 +34,8 @@
 
 3. **開発体験の向上**
    - 明示的な前処理（pre-scripts）と後処理（post-scripts）により、npm scriptsの挙動が予測しやすくなりました
+
+## 追加の変更
+
+1. `prestart` スクリプトを追加し、`npm run start` 実行時に自動でビルドが行われるようになりました
+2. 依存関係に `@modelcontextprotocol/sdk` を追加しました
