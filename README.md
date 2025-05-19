@@ -16,6 +16,7 @@ Ollamaモデルを活用したAIコーディングアシスタント。ローカ
 git clone https://github.com/yourusername/ollama-code.git
 cd ollama-code
 npm install
+npm run build
 npm link
 ```
 
