@@ -185,15 +185,19 @@ export class OllamaWithMCPProvider extends OllamaProvider {
         try {
           // MCPツールを呼び出し
           const toolResult = await this.mcpBridge.callOllamaTool(toolName, args);
-          
+
+          const resultText = Array.isArray(toolResult.content)
+            ? toolResult.content.map((c: any) => c.text || '').join('\n')
+            : String(toolResult);
+
           // ツール結果をメッセージに追加
           newMessages.push({
             role: 'tool',
-            content: toolResult.result,
+            content: resultText,
             tool_call_id: toolCall.id
           } as ChatMessage);
-          
-          console.log(`ツール "${toolName}" 実行結果:`, toolResult.result.substring(0, 100) + (toolResult.result.length > 100 ? '...' : ''));
+
+          console.log(`ツール "${toolName}" 実行結果:`, resultText.substring(0, 100) + (resultText.length > 100 ? '...' : ''));
         } catch (error) {
           console.error(`ツール "${toolName}" 呼び出しエラー:`, error instanceof Error ? error.message : String(error));
           
