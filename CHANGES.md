@@ -2,9 +2,9 @@
 
 ## package.jsonの修正
 
-1. `bin`セクションの参照先を修正
-   - 修正前: `"./dist/bin/ollama-code.js"`
-   - 修正後: `"./bin/ollama-code.js"`
+1. `bin`セクションの参照先を再度修正
+   - 修正前: `"./bin/ollama-code.js"`
+   - 修正後: `"./dist/bin/ollama-code.js"`
 
 2. スクリプトの依存関係を明示化
    - `presetup`, `premcp-chat`などのスクリプトを追加し、必要なビルドを事前に実行するように修正
@@ -31,3 +31,8 @@
 
 3. **開発体験の向上**
    - 明示的な前処理（pre-scripts）と後処理（post-scripts）により、npm scriptsの挙動が予測しやすくなりました
+
+## 追加の変更
+
+1. `prestart` スクリプトを追加し、`npm run start` 実行時に自動でビルドが行われるようになりました
+2. 依存関係に `@modelcontextprotocol/sdk` を追加しました
