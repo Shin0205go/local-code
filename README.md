@@ -16,6 +16,7 @@ Ollamaモデルを活用したAIコーディングアシスタント。ローカ
 git clone https://github.com/yourusername/ollama-code.git
 cd ollama-code
 npm install
+# 使用しているMCP SDKのバージョンは `@modelcontextprotocol/sdk@1.11.4` です
 npm run build
 npm link
 ```

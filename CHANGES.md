@@ -14,6 +14,9 @@
    - TypeScriptのコンパイルとバイナリファイルの処理を分離
    - `build:bin`スクリプトを追加して実行権限設定のみを担当
 
+4. 新しい依存関係の追加
+   - `@modelcontextprotocol/sdk` バージョン `1.11.4` を追加し、MCP関連機能のビルドエラーを解消
+
 ## bin/ollama-code.jsの修正
 
 1. mcp-chatコマンドの追加

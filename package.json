@@ -39,7 +39,7 @@
     "inquirer": "^8.2.5",
     "node-fetch": "^3.3.2",
     "ollama": "^0.5.15",
-    "@modelcontextprotocol/sdk": "^0.1.0"
+    "@modelcontextprotocol/sdk": "1.11.4"
   },
   "devDependencies": {
     "@types/inquirer": "^8.2.5",
